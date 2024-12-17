@@ -18,11 +18,6 @@ from walks import generate_random_walks_directed_with_weights, update_random_wal
 c = 2 #constant for the PPR walk
 epsilon = 0.2  # Reset probability
 
-# Define files to store the outputs
-#changes_file = "./output/changes_over_time.json"
-##random_walks_file = "./output/random_walks.json"
-#ppr_walks_file = "./output/ppr_walks.json"
-#ppr_walks_cumsum_file = "./output/cumsum.json"
 output_directory = "./output/"
 logging.basicConfig(
     level=logging.INFO, 
@@ -32,7 +27,7 @@ logging.basicConfig(
 )
 
 
-def graph_and_queries(num_timesteps = 10, n_nodes = 1000, m_edges = 3, num_queries = 5):  
+def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):  
     """
     param num_timesteps: int, number of timesteps
     param n_nodes: int, number of nodes
@@ -40,7 +35,7 @@ def graph_and_queries(num_timesteps = 10, n_nodes = 1000, m_edges = 3, num_queri
     param num_queries: int, number of queries
     """  
     #create dynamic graph or import dynamic graph
-    dynamic_graph = synthetic_graph(num_timesteps = 10, n_nodes = 1000, m_edges = 3)
+    dynamic_graph = synthetic_graph(num_timesteps , n_nodes , m_edges )
 
     # Generate for query each timestep of the dynamic graph
     queries = dict()
@@ -129,9 +124,8 @@ def write_to_file(data, prefix = "data", file_extension="json", output_directory
 
 
 
-def generate_top_k_summary(n_nodes=10000):
+def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_queries = 5):
     # Initialize a dictionary to store the changes for each timestep
-    #timestamps = num_timesteps
     changes_over_time = dict() #dictionary to store the changes for each timestep
     random_walks = dict() #dictionary to store the random walks for each node for each timestep
     ppr_walks = dict() #dictionary to store the complete ppr for each timestep
@@ -143,7 +137,7 @@ def generate_top_k_summary(n_nodes=10000):
 
     # Generate the dynamic graph and queries
     print(n_nodes)
-    dynamic_graph, queries = graph_and_queries(num_timesteps = 10, n_nodes=n_nodes, m_edges = 3, num_queries = 5)
+    dynamic_graph, queries = graph_and_queries(num_timesteps , n_nodes, m_edges, num_queries)
 
     for timestep in range(len(dynamic_graph) - 1): 
         print("Timestep", timestep)
@@ -211,8 +205,8 @@ def generate_top_k_summary(n_nodes=10000):
 
 
 if __name__=="__main__":
-    n_nodes = 100000
-    changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks = generate_top_k_summary(n_nodes)
+    nodes = 1000
+    changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks = generate_top_k_summary(n_nodes=nodes)
 
 
     # Convert sets to lists in changes_over_time dictionary
