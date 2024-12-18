@@ -1,7 +1,8 @@
 
 import random
+from collections import defaultdict
 
-def generate_random_walks_directed_with_weights(graph, num_walks = 2, walk_length = 3):
+def generate_random_walks_directed_with_weights(dyngraph, num_walks=2, walk_length=3):
     """
     Generate random walks for each node in a directed weighted graph.
 
@@ -10,31 +11,43 @@ def generate_random_walks_directed_with_weights(graph, num_walks = 2, walk_lengt
     param walk_length: Length of each random walk.
     reeturn: dictionary where each key is a node and the value is a list of random walks starting from that node.
     """
-    precomputed_walks = {}
+    # Convert NetworkX graph to expected dictionary format
+    graph = {node: {nbr: data['weight'] for nbr, data in dyngraph[node].items()} for node in dyngraph.nodes()}
+    edges = dyngraph.edges()
+
+    precomputed_walks = dict()
+    inverted_edges = defaultdict(list) #create a dictionary with edges as keys and an empty list as values
+    [inverted_edges[key] for key in edges]#ensure all edges are present in the dictionary
 
     for node in graph:
         walks = []
+   
         for _ in range(num_walks):
             walk = [node]  # Start the walk at the current node
             current_node = node
-
-            for _ in range(walk_length):
+            for _ in range(walk_length - 1):
                 if graph[current_node]:  # Ensure the current node has outgoing neighbors
                     neighbors = list(graph[current_node].keys())
                     weights = list(graph[current_node].values())
 
                     # Choose a neighbor based on edge weights
-                    current_node = random.choices(neighbors, weights=weights, k=1)[0]
-                    walk.append(current_node)
+                    next_node = random.choices(neighbors, weights=weights, k=1)[0]
+                    walk.append(next_node)
+
+                    # Update the inverted_edges dictionary
+                    new_edge = (current_node, next_node)
+                    inverted_edges[new_edge].append(walk)
+                    current_node = next_node
+
                 else:
                     break  # If no outgoing neighbors, terminate the walk
             walks.append(walk)
         precomputed_walks[node] = walks
 
-    return precomputed_walks
+    return precomputed_walks, inverted_edges
 
 
-def update_random_walks_directed_with_weights(graph, precomputed_walks, changes, num_walks=2, walk_length=3):
+def update_random_walks_directed_with_weights(graph, precomputed_walks, inverted_edges, changes, num_walks=2, walk_length=3):#update_random_walks_directed_with_weights(graph, precomputed_walks, changes, num_walks=2, walk_length=3):
     """
     Update precomputed random walks based on changes in the graph, ensuring walks remain directed, weighted, and consistent.
     
@@ -53,22 +66,24 @@ def update_random_walks_directed_with_weights(graph, precomputed_walks, changes,
     return: Updated precomputed random walks.
     """
 
-    # Handle edge removals
-    for u, v, weight in changes.get('edges_removed', []):
-        for node, walks in precomputed_walks.items():
+# Handle edge removals
+    for edge in changes.get('edges_removed', []):
+        if edge in inverted_edges:
+            affected_walks = inverted_edges.pop(edge)
+            u, v = edge
+            
+            # Update precomputed walks
             updated_walks = []
-            for walk in walks:
-                # Check if the removed edge exists in the walk
-                if len(walk) > 1 and (u, v) in zip(walk[:-1], walk[1:]):
-                    # Find the index of the removed edge in the walk
+            for walk in affected_walks:
+                while len(walk) > 1 and (u,v) in zip(walk[:-1], walk[1:]):
                     edge_index = list(zip(walk[:-1], walk[1:])).index((u, v))
-                    walk = walk[:edge_index + 1]  # Truncate walks at the first occurrence of the removed edge
-                updated_walks.append(walk)  # Save the truncated walk
-            precomputed_walks[node] = updated_walks
+                    walk = walk[:edge_index + 1]  # Truncate the walk at the removed edge
+                updated_walks.append(walk)
+            precomputed_walks[u] = updated_walks
+
 
     # Handle node removals
     for node in changes.get('nodes_removed', []):
-        # Remove walks starting from the deleted node
         if node in precomputed_walks:
             precomputed_walks.pop(node, None)
 
@@ -77,29 +92,29 @@ def update_random_walks_directed_with_weights(graph, precomputed_walks, changes,
             updated_walks = []
             for walk in walks:
                 if node in walk:
-                    walk = walk[:walk.index(node)]  # Truncate walk at the removed node
+                    walk = walk[:walk.index(node)]  # Truncate the walk at the removed node
                 updated_walks.append(walk)
             precomputed_walks[key] = updated_walks
-        
-    
+
+
     # Handle node/edge additions: Extend walks that don't meet the required length
     for node, walks in precomputed_walks.items():
         updated_walks = []
         for walk in walks:
-            while len(walk) < walk_length:
+            if len(walk)>0 and len(walk) < walk_length:#ensure walk is not empty and less than walk length
                 last_node = walk[-1]
-                if last_node in graph and graph[last_node]:  # Ensure valid directed neighbors with weights
+                if last_node in graph and graph[last_node]:  # Ensure valid neighbors
                     neighbors = list(graph[last_node].keys())
                     weights = list(graph[last_node].values())
                     next_node = random.choices(neighbors, weights=weights, k=1)[0]
                     walk.append(next_node)
+                    inverted_edges.setdefault((last_node, next_node), []).append(walk)  # Add new edge to inverted_edges
                 else:
                     break
             updated_walks.append(walk[:walk_length])  # Ensure the walk does not exceed max length
         precomputed_walks[node] = updated_walks
 
-
-    return precomputed_walks
+    return precomputed_walks, inverted_edges
 
 
 def fetch_for_node(node, walks_storage, graph):
