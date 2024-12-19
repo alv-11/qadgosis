@@ -25,7 +25,7 @@ def generate_random_walks_directed_with_weights(dyngraph, num_walks=2, walk_leng
         for _ in range(num_walks):
             walk = [node]  # Start the walk at the current node
             current_node = node
-            for _ in range(walk_length - 1):
+            for _ in range(walk_length):
                 if graph[current_node]:  # Ensure the current node has outgoing neighbors
                     neighbors = list(graph[current_node].keys())
                     weights = list(graph[current_node].values())

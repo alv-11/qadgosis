@@ -1,9 +1,18 @@
-2024-12-17 09:44:23,332 - Runtime for MC method timestep 0: 0.04980301856994629 seconds
-2024-12-17 09:44:26,030 - Runtime for MC method timestep 1: 2.6972949504852295 seconds
-2024-12-17 09:44:28,731 - Runtime for MC method timestep 2: 2.700831174850464 seconds
-2024-12-17 09:44:31,403 - Runtime for MC method timestep 3: 2.6724727153778076 seconds
-2024-12-17 09:44:34,058 - Runtime for MC method timestep 4: 2.6548449993133545 seconds
-2024-12-17 09:44:36,697 - Runtime for MC method timestep 5: 2.6387579441070557 seconds
-2024-12-17 09:44:39,458 - Runtime for MC method timestep 6: 2.7603683471679688 seconds
-2024-12-17 09:44:42,129 - Runtime for MC method timestep 7: 2.671234130859375 seconds
-2024-12-17 09:44:44,754 - Runtime for MC method timestep 8: 2.6244871616363525 seconds
+2024-12-19 16:19:42,944 - Runtime for MC method timestep 0: 0.054762840270996094 seconds
+2024-12-19 16:19:42,945 - Update time for MC method timestep 0, 0.02463507652282715 seconds
+2024-12-19 16:19:43,053 - Runtime for MC method timestep 1: 0.10881376266479492 seconds
+2024-12-19 16:19:43,054 - Update time for MC method timestep 1, 0.024235963821411133 seconds
+2024-12-19 16:19:43,107 - Runtime for MC method timestep 2: 0.053031206130981445 seconds
+2024-12-19 16:19:43,107 - Update time for MC method timestep 2, 0.03859305381774902 seconds
+2024-12-19 16:19:43,143 - Runtime for MC method timestep 3: 0.03641986846923828 seconds
+2024-12-19 16:19:43,143 - Update time for MC method timestep 3, 0.025094032287597656 seconds
+2024-12-19 16:19:43,178 - Runtime for MC method timestep 4: 0.034449100494384766 seconds
+2024-12-19 16:19:43,178 - Update time for MC method timestep 4, 0.024222135543823242 seconds
+2024-12-19 16:19:43,246 - Runtime for MC method timestep 5: 0.06789803504943848 seconds
+2024-12-19 16:19:43,246 - Update time for MC method timestep 5, 0.05852913856506348 seconds
+2024-12-19 16:19:43,280 - Runtime for MC method timestep 6: 0.03404879570007324 seconds
+2024-12-19 16:19:43,280 - Update time for MC method timestep 6, 0.02582097053527832 seconds
+2024-12-19 16:19:43,312 - Runtime for MC method timestep 7: 0.03167986869812012 seconds
+2024-12-19 16:19:43,312 - Update time for MC method timestep 7, 0.023826122283935547 seconds
+2024-12-19 16:19:43,344 - Runtime for MC method timestep 8: 0.03217577934265137 seconds
+2024-12-19 16:19:43,344 - Update time for MC method timestep 8, 0.02443385124206543 seconds

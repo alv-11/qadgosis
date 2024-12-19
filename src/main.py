@@ -164,8 +164,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
         directed_graph = {node: list(dyngraph.neighbors(node)) for node in dyngraph.nodes()}
 
     
-    # Generate the PPR walks for the graph in the current timestep
-        #determine required length of PPR walk
+        # Generate the PPR walks for the graph in the current timestep
         n = len(dyngraph.nodes())
         k = int(0.1*n) #summary size
         L = (c/epsilon) *k *(n/k)**epsilon #required length of PPR walk
@@ -205,7 +204,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
 
 
 if __name__=="__main__":
-    nodes = 100000
+    nodes = 1000
     changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks = generate_top_k_summary(n_nodes=nodes)
 
 
