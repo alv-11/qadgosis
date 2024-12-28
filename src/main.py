@@ -11,7 +11,7 @@ import time
 from collections import Counter
 import logging
 from queries import generate_query, synthetic_graph
-from walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights, fetch_for_node, personalized_complete_pagerank_walk
+from walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights,  personalized_complete_pagerank_walk, compute_personalized_pagerank
 
 
 
@@ -42,7 +42,10 @@ def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):
     for timestep in range(len(dynamic_graph)): 
         G_t = dynamic_graph[timestep]
             # Convert NetworkX graph to the expected dictionary format
-        graph_dict = {node: {nbr: data['weight'] for nbr, data in G_t[node].items()} for node in G_t.nodes()}
+        graph_dict = {
+        node: {nbr: data.get('weight', 0) for nbr, data in G_t[node].items()}
+        for node in G_t.nodes()
+        }
 
         timestep_query = dict()
         for i in range(num_queries):
@@ -61,10 +64,12 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
     param queries: Dictionary of queries for each timestep.
     return: Dictionary representation of the dynamic graph with queries, changes_BetweeenTimesteps and the starting node for PPR walk
     """
-
+    start_time = time.time()
     # Get the time slice between two snapshots of the graph
     snapshot_s, w = personalized_graph(dynamic_graph, queries, timestep)
     snapshot_t,_ = personalized_graph(dynamic_graph, queries, timestep+1)
+    end_time = time.time()
+    logging.info(f"Runtime for preprocessing of dummynode{timestep}, {end_time - start_time} seconds")
 
 
     # Get nodes and edges in each snapshot
@@ -89,7 +94,6 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
     'edges_added': edges_added,
     'edges_removed': edges_removed
     } 
-
     return snapshot_s, changes, w
 
 
@@ -102,9 +106,7 @@ def personalized_graph(dynamic_graph, queries, timestep):
     for node in query_nodes:
         snapshot_s.add_edge(w, node, weight=equal_weight)
 
-
     return snapshot_s, w
-
 
 
 def write_to_file(data, prefix = "data", file_extension="json", output_directory="./output/"):
@@ -119,51 +121,67 @@ def write_to_file(data, prefix = "data", file_extension="json", output_directory
 def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_queries = 5):
     """convert some part of these to functions"""
     # Initialize a dictionary to store the changes for each timestep
-    changes_over_time = dict() #dictionary to store the changes for each timestep
-    random_walks = dict() #dictionary to store the random walks for each node for each timestep
-    ppr_walks = dict() #dictionary to store the complete ppr for each timestep
-    ppr_cumsum_walks = dict() #dictionary to store the cumulative sum of the ppr walks from each timestep
-    top_k_cumsum_walks = dict()#dictionary to store the top k walks for each timestep
-    edge_walks = dict() #dictionary to store the inverted edge index for each timstep
+    changes_over_time = dict() #dictionary to store the changes
+    random_walks = dict() #dictionary to store the random walks for each node 
+    edge_to_walks = dict() #dictionary to store the edges to walk_ids 
+    node_to_walks = dict() #dictionary to store the nodes to walk_ids
+    walks_to_ids = dict() #dictionary to store the walks to ids 
+    startnode_to_ids = dict() #dictionary to store the random walk ids for each node
+    ppr_walks = dict() #dictionary to store the complete ppr 
+    ppr_cumsum_walks = dict() #dictionary to store the cumulative sum of the ppr walks
+    top_k_cumsum_walks = dict()#dictionary to store the top k walks 
+    top_k_power = dict() #dictionary to store the top k for the power method
+    top_k_power_nx = dict() #dictionary to store the top k for the power method using networkx
 
-    counters = dict() #dictionary to store the counters for each node for each timestep
-    cumulative_counts = Counter()#counter to store the cumulative counts of the ppr walks from each timestep
+    counters = dict() #dictionary to store the counters for each node 
+    cumulative_counts = Counter()#counter to store the cumulative counts of the ppr walks 
 
     # Generate the dynamic graph and queries
-    print(n_nodes)
     dynamic_graph, queries = graph_and_queries(num_timesteps , n_nodes, m_edges, num_queries)
 
     for timestep in range(len(dynamic_graph) - 1): 
         print("Timestep", timestep)
-        starttime = time.time()
 
-        count_start = time.time()
-        dyngraph, changes, w = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)    
-        count_end = time.time()
+        #time_start = time.time()
+        dyngraph, changes, w = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)   
+        #time_end = time.time()
+
+        #print("Time taken for preprocessing", time_end - time_start)
+
         changes_over_time[timestep] = changes
 
-        # Convert NetworkX graph to the expected dictionary format
-        graph_dict = {node: {nbr: data['weight'] for nbr, data in dyngraph[node].items()} for node in dyngraph.nodes()}
-        
-        if timestep == 0:
-            precomputed_walks, inverted_edges = generate_random_walks_directed_with_weights(dyngraph,num_walks=3, walk_length=3)
+        starttime = time.time()
+        count_start = time.time()
+        if timestep == 0:       
+            precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids = generate_random_walks_directed_with_weights(dyngraph, num_walks=3, walk_length=3)
             random_walks[timestep] = precomputed_walks
-            edge_walks[timestep] = inverted_edges
+            edge_to_walks[timestep] = inverted_edges
+            node_to_walks[timestep] = inverted_nodes
+            walks_to_ids[timestep] = walk_ids
+            startnode_to_ids[timestep] = random_walk_ids
             R = copy.deepcopy(precomputed_walks)
 
         else:
-            previous_walks = random_walks[timestep - 1].copy()  
-            previous_edge_walks = edge_walks[timestep - 1].copy()  
-            updated_walks, updated_edge_walks = update_random_walks_directed_with_weights(graph_dict, previous_walks, previous_edge_walks, changes_over_time[timestep - 1], num_walks=3, walk_length=3)#int(1/epsilon)
+            previous_edge_walks = edge_to_walks[timestep - 1].copy()  # Get the walks from the previous timestep
+            previous_node_walks = node_to_walks[timestep - 1].copy()  # Get the walks from the previous timestep
+            previous_walk_ids = walks_to_ids[timestep - 1].copy()  # Get the walks from the previous timestep
+            previous_startnode_ids = startnode_to_ids[timestep - 1].copy()  # Get the walks from the previous timestep
+
+
+            updated_walks, updated_edge_walks, updated_node_walks, updated_walks_to_ids, updated_startnode_ids = update_random_walks_directed_with_weights(dyngraph,  previous_walk_ids, 
+                                                                                                            previous_edge_walks,previous_node_walks, previous_startnode_ids, 
+                                                                                                            changes_over_time[timestep - 1], num_walks=3, walk_length=3)
             random_walks[timestep] = updated_walks  # Save updated walks for future reference
-            edge_walks[timestep] = updated_edge_walks
+            edge_to_walks[timestep] = updated_edge_walks
+            node_to_walks[timestep] = updated_node_walks
+            walks_to_ids[timestep] = updated_walks_to_ids
+            startnode_to_ids[timestep] = updated_startnode_ids
             R = copy.deepcopy(updated_walks)
 
-
+        count_end = time.time()
         # Generate the directed graph for the graph in the current timestep
         directed_graph = {node: list(dyngraph.neighbors(node)) for node in dyngraph.nodes()}
 
-    
         # Generate the PPR walks for the graph in the current timestep
         n = len(dyngraph.nodes())
         k = int(0.1*n) #summary size
@@ -198,7 +216,41 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
         endtime = time.time()
 
         logging.info(f"Runtime for MC method timestep {timestep}: {endtime - starttime} seconds") 
-        logging.info(f"Update time for MC method timestep {timestep}, {count_end - count_start} seconds")
+        #logging.info(f"Update time for MC method timestep {timestep}, {count_end - count_start} seconds")
+
+        # self_start = time.time()
+        # # Compute personalized pagerank for the current snapshot
+        # pagerank_scores = compute_personalized_pagerank(dyngraph, alpha=0.80, num_iterations=100, personalize_node=w)
+        #     # Select the top-k nodes
+        # if pagerank_scores:
+        #     top_k_pagerank = {
+        #         str(key): value  # Convert the key to string before adding to the new dictionary
+        #         for key, value in sorted(pagerank_scores.items(), key=lambda x: x[1], reverse=True)[:k+1]
+        #         if not str(key).lower().startswith('dummy')  # Check if the string representation of the key starts with 'dummy'
+        #     }
+
+        #     top_k_power[timestep]  = top_k_pagerank
+        #     self_end = time.time()
+        #     runtime = self_end - self_start
+
+        #     logging.info(f"Runtime for self power method timestep {timestep}: {runtime} seconds")
+
+        #Compute library pagerank for the current snapshot
+        library_start = time.time()
+        library_scores = nx.pagerank(dyngraph, alpha=0.80)
+            # Select the top-k nodes
+        if library_scores:
+            top_k_pagerank = {
+                str(key): value  
+                for key, value in sorted(library_scores.items(), key=lambda x: x[1], reverse=True)[:k+1]
+                if not str(key).lower().startswith('dummy')  
+            }
+
+            top_k_power_nx[timestep]  = top_k_pagerank
+            library_end = time.time()
+            runtime = library_end - library_start
+
+            logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
         
     return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks
 

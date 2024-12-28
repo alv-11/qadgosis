@@ -1,6 +1,8 @@
 
 import random
 from collections import defaultdict
+import string
+import uuid
 
 def generate_random_walks_directed_with_weights(dyngraph, num_walks=2, walk_length=3):
     """
@@ -12,16 +14,24 @@ def generate_random_walks_directed_with_weights(dyngraph, num_walks=2, walk_leng
     reeturn: dictionary where each key is a node and the value is a list of random walks starting from that node.
     """
     # Convert NetworkX graph to expected dictionary format
-    graph = {node: {nbr: data['weight'] for nbr, data in dyngraph[node].items()} for node in dyngraph.nodes()}
-    edges = dyngraph.edges()
+    graph = {
+        node: {nbr: data.get('weight', 0) for nbr, data in dyngraph[node].items()}
+        for node in dyngraph.nodes()
+    }
 
     precomputed_walks = dict()
     inverted_edges = defaultdict(list) #create a dictionary with edges as keys and an empty list as values
-    [inverted_edges[key] for key in edges]#ensure all edges are present in the dictionary
+    [inverted_edges[key] for key in dyngraph.edges()]#ensure all edges are present in the dictionary
 
-    for node in graph:
+    inverted_nodes = defaultdict(set)
+    [inverted_nodes[key] for key in dyngraph.nodes()]
+
+    walk_ids = dict()
+    random_walk_ids = dict()
+
+    for node in graph:        
         walks = []
-   
+        random_ids= []
         for _ in range(num_walks):
             walk = [node]  # Start the walk at the current node
             current_node = node
@@ -29,25 +39,35 @@ def generate_random_walks_directed_with_weights(dyngraph, num_walks=2, walk_leng
                 if graph[current_node]:  # Ensure the current node has outgoing neighbors
                     neighbors = list(graph[current_node].keys())
                     weights = list(graph[current_node].values())
-
                     # Choose a neighbor based on edge weights
                     next_node = random.choices(neighbors, weights=weights, k=1)[0]
                     walk.append(next_node)
 
-                    # Update the inverted_edges dictionary
-                    new_edge = (current_node, next_node)
-                    inverted_edges[new_edge].append(walk)
+                    # Generate a unique ID for the walk 
+                    unique_id = uuid.uuid4()#''.join(random.choices(string.ascii_letters + string.digits, k=8))
                     current_node = next_node
-
                 else:
-                    break  # If no outgoing neighbors, terminate the walk
+                    break  
+            walk_ids[unique_id] = walk
+            # Update the inverted_edges dictionary
+            for  u, v in zip(walk[:-1], walk[1:]):
+                inverted_edges[(u,v)].append(unique_id)
+        
+            # Update the inverted_nodes dictionary
+            for any_node in walk:
+                inverted_nodes[any_node].add(unique_id)
+                    
             walks.append(walk)
-        precomputed_walks[node] = walks
+            random_ids.append(unique_id)
+        random_walk_ids[node] = random_ids #nodes to ids
 
-    return precomputed_walks, inverted_edges
+    for node, walks in random_walk_ids.items():
+        precomputed_walks[node] = [walk_ids[walk] for walk in walks if walk in walk_ids] #nodes to walks that start from that node
+
+    return precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids
 
 
-def update_random_walks_directed_with_weights(graph, precomputed_walks, inverted_edges, changes, num_walks=2, walk_length=3):#update_random_walks_directed_with_weights(graph, precomputed_walks, changes, num_walks=2, walk_length=3):
+def update_random_walks_directed_with_weights(dyngraph,  ids_to_walks, inverted_edges, inverted_nodes, startnode_walk_ids, changes, num_walks=2, walk_length=3):
     """
     Update precomputed random walks based on changes in the graph, ensuring walks remain directed, weighted, and consistent.
     
@@ -66,55 +86,114 @@ def update_random_walks_directed_with_weights(graph, precomputed_walks, inverted
     return: Updated precomputed random walks.
     """
 
-# Handle edge removals
+    graph = {
+        node: {nbr: data.get('weight', 0) for nbr, data in dyngraph[node].items()}
+        for node in dyngraph.nodes()
+    }
+    truncated_walk_ids={}
+
+    # Handle edge removals
     for edge in changes.get('edges_removed', []):
         if edge in inverted_edges:
             affected_walks = inverted_edges.pop(edge)
-            u, v = edge
-            
+
+            u, v = edge       
             # Update precomputed walks
-            updated_walks = []
-            for walk in affected_walks:
+            for walk_id in affected_walks:
+                walk = ids_to_walks[walk_id]
                 while len(walk) > 1 and (u,v) in zip(walk[:-1], walk[1:]):
                     edge_index = list(zip(walk[:-1], walk[1:])).index((u, v))
                     walk = walk[:edge_index + 1]  # Truncate the walk at the removed edge
-                updated_walks.append(walk)
-            precomputed_walks[u] = updated_walks
+                    
+                    truncated_walk_ids[walk_id] = walk
 
 
     # Handle node removals
     for node in changes.get('nodes_removed', []):
-        if node in precomputed_walks:
-            precomputed_walks.pop(node, None)
+        if node in inverted_nodes:
+            affected_walks = inverted_nodes.pop(node)
+            startnode_walk_ids.pop(node, None)#remove random walks for removed nodes
 
-        # Update walks passing through the removed node
-        for key, walks in precomputed_walks.items():
-            updated_walks = []
-            for walk in walks:
-                if node in walk:
+            # Update precomputed walks
+            for walk_id in affected_walks:
+                walk = ids_to_walks[walk_id]
+                while len(walk) > 1 and node in walk:
                     walk = walk[:walk.index(node)]  # Truncate the walk at the removed node
-                updated_walks.append(walk)
-            precomputed_walks[key] = updated_walks
+                truncated_walk_ids[walk_id] = walk
 
 
-    # Handle node/edge additions: Extend walks that don't meet the required length
-    for node, walks in precomputed_walks.items():
-        updated_walks = []
-        for walk in walks:
-            if len(walk)>0 and len(walk) < walk_length:#ensure walk is not empty and less than walk length
-                last_node = walk[-1]
-                if last_node in graph and graph[last_node]:  # Ensure valid neighbors
-                    neighbors = list(graph[last_node].keys())
-                    weights = list(graph[last_node].values())
+    # Handle edge additions
+    ## Extend the trunctaed walks
+    for walk_id, walk in truncated_walk_ids.items():
+        while len(walk) < walk_length+1 and len(walk) > 0: #ensure walk is not empty and less than walk length
+            last_node = walk[-1] #this will be the last node in the walk, works for new edges starting at those nodes
+            if graph[last_node]:  # Ensure valid neighbors
+                neighbors = list(graph[last_node].keys())
+                weights = list(graph[last_node].values())
+                next_node = random.choices(neighbors, weights=weights, k=1)[0]
+                walk.append(next_node)
+                last_node = next_node
+            else:
+                break
+
+        truncated_walk_ids[walk_id] = walk
+        # For each edge in the walk, associate the unique ID with the edge
+        for u, v in zip(walk[:-1], walk[1:]):  
+            inverted_edges[(u, v)].append(walk_id)
+        for any_node in walk:
+            inverted_nodes[any_node].add(walk_id)
+
+    try:
+        print("percentage of walks affected", 100*(len(truncated_walk_ids)/len(ids_to_walks)))
+    except:
+        print("percentage of walks affected", 0)
+
+    #update the walk_ids with the extended truncated walks
+    shared_keys = set(ids_to_walks.keys()).intersection(truncated_walk_ids.keys())
+    for key in shared_keys:
+        ids_to_walks[key] = truncated_walk_ids[key]
+
+
+    #handle new node additions:
+    for node in changes.get('nodes_added', []):
+        walks = []
+        random_ids = []
+        for _ in range(num_walks):
+            walk = [node]  # Start the walk at the current node
+            current_node = node
+            visited = set()  # Keep track of visited nodes
+            visited
+            for _ in range(walk_length):
+                if graph[current_node]:  # Ensure the current node has outgoing neighbors
+                    neighbors = list(graph[current_node].keys())
+                    weights = list(graph[current_node].values())
+                # Choose a neighbor based on edge weights
                     next_node = random.choices(neighbors, weights=weights, k=1)[0]
                     walk.append(next_node)
-                    inverted_edges.setdefault((last_node, next_node), []).append(walk)  # Add new edge to inverted_edges
-                else:
-                    break
-            updated_walks.append(walk[:walk_length])  # Ensure the walk does not exceed max length
-        precomputed_walks[node] = updated_walks
 
-    return precomputed_walks, inverted_edges
+                    unique_id = uuid.uuid4()#''.join(random.choices(string.ascii_letters + string.digits, k=8))
+                    
+            ids_to_walks[unique_id] = walk
+            # For each edge in the walk, associate the unique ID with the edge
+            for u, v in zip(walk[:-1], walk[1:]):  
+                inverted_edges[(u, v)].append(unique_id)
+            for any_node in walk:
+                inverted_nodes[any_node].add(unique_id)
+                    
+            walks.append(walk)
+            random_ids.append(unique_id)
+
+       #precomputed_walks[node] = walks #may not need this eventually
+        startnode_walk_ids[node] = random_ids
+        
+    #reconstruct the precomputed walks
+    precomputed_walks = {}
+    for node, walk_ids in startnode_walk_ids.items():
+        precomputed_walks[node] = [ids_to_walks[walk_id] for walk_id in walk_ids if walk_id in ids_to_walks]
+
+    return precomputed_walks, inverted_edges, inverted_nodes, ids_to_walks, startnode_walk_ids
+
+ 
 
 
 def fetch_for_node(node, walks_storage, graph):
@@ -204,3 +283,30 @@ def personalized_complete_pagerank_walk(w, L, epsilon, precomputed_walks, graph)
 
 
 
+def compute_personalized_pagerank(G, alpha=0.85, num_iterations=100, personalize_node=None):
+    """
+    Compute personalized PageRank scores using power iteration method.
+    """   
+    # Initialize the PageRank scores
+    N = len(G.nodes())
+    ranks = {node: 1/N for node in G.nodes()}  # uniform initialization
+    if personalize_node in G.nodes():
+        ranks[personalize_node] = 1  # Start teleportation at the specified node
+    
+    # Perform power iterations
+    for iteration in range(num_iterations):
+        new_ranks = {}
+        for node in G.nodes():
+            # Calculate incoming contributions
+            rank_sum = 0
+            for neighbor in G.predecessors(node):  # Account for directed edges
+                weight = G[neighbor][node].get('weight', 1.0)
+                out_degree = sum(G[neighbor][nbr].get('weight', 1.0) for nbr in G.successors(neighbor))
+                if out_degree > 0:
+                    rank_sum += (ranks[neighbor] * weight) / out_degree
+            # Apply damping factor
+            new_ranks[node] = (1 - alpha) * (1 if node == personalize_node else 0) + alpha * rank_sum
+        
+        ranks = new_ranks
+
+    return ranks

@@ -1,7 +1,7 @@
 import networkx as nx
 import random
 
-def synthetic_graph(num_timesteps = 10, n_nodes = 1000, m_edges = 3):
+def synthetic_graph(num_timesteps, n_nodes, m_edges):
 
     """
     Generate a synthetic dynamic graph with changes at each timestep.
@@ -10,38 +10,46 @@ def synthetic_graph(num_timesteps = 10, n_nodes = 1000, m_edges = 3):
     param m_edges: int, number of edges to attach per new node
     return: dynamic_graph: dict, dictionary of dynamic graphs at each timestep
     """
-
-    # Initialize an empty graph
-    dynamic_graph = dict()
-    # Generate a dynamic directed graph with changes at each timestep
-    for t in range(num_timesteps):
-        base_graph = nx.powerlaw_cluster_graph(n_nodes, m_edges, p=0.05) #undirected power-law graph
+    dynamic_graph = {}
+    base_graph = nx.powerlaw_cluster_graph(n_nodes, m_edges, p=0.05)  # Undirected power-law graph
+    
+    # Convert to directed graph with random edges
+    directed_graph = nx.DiGraph()
+    directed_graph.add_nodes_from(base_graph.nodes())
+    for u, v in base_graph.edges():
+        if random.random() > 0.5:
+            directed_graph.add_edge(u, v)
+        else:
+            directed_graph.add_edge(v, u)
+    
+    # Assign random weights to edges
+    for u, v in directed_graph.edges():
+        directed_graph[u][v]['weight'] = random.uniform(0.5, 10)
+    
+    dynamic_graph[0] = directed_graph
+    
+    # Incrementally update the graph for subsequent timesteps
+    for t in range(1, num_timesteps):
+        previous_graph = dynamic_graph[t - 1].copy()
         
-        # Convert to a directed graph by assigning directions randomly
-        directed_graph = nx.DiGraph()
-        directed_graph.add_nodes_from(base_graph.nodes())
-        for u, v in base_graph.edges():
-            if random.random() > 0.5:
-                directed_graph.add_edge(u, v)
-            else:
-                directed_graph.add_edge(v, u)
-
-        # Introduce random changes to edges 
-        for i in range(random.randint(1, 3)):  # Randomly modify 1 to 3 edges
+        # Randomly modify a small number of edges
+        for _ in range(random.randint(1, 10)):  # Modify 1 to 5 edges
             u, v = random.sample(range(n_nodes), 2)
-            if directed_graph.has_edge(u, v):
-                directed_graph.remove_edge(u, v)  # Remove edge if it exists
+            if previous_graph.has_edge(u, v):
+                previous_graph.remove_edge(u, v)  
             else:
-                directed_graph.add_edge(v, u)  # Add edge if it doesn't exist
+                previous_graph.add_edge(u, v)  
+        
+        # update weights for small subset of modified edges 
+        for u, v in random.sample(list(previous_graph.edges()), k=min(len(previous_graph.edges()), 3)):
+            previous_graph[u][v]['weight'] = random.uniform(0.5, 10)
 
-        # Assign random weights to edges
-        for u, v in directed_graph.edges():
-            directed_graph[u][v]['weight'] = random.uniform(0.5, 10)
 
-        # Store the directed graph for the timestep
-        dynamic_graph[t] = directed_graph
-
+        dynamic_graph[t] = previous_graph
+    
     return dynamic_graph
+
+
     
 
 def generate_query(graph, path_len=2, qid=0, constraint_index=None):
