@@ -79,6 +79,8 @@ def generate_query(graph, path_len=2, qid=0, constraint_index=None):
         
         # Normalize weights to create a probability distribution
         total_weight = sum(weights)
+        if total_weight == 0:
+            break
         probabilities = [w / total_weight for w in weights]
 
         # Select the next node probabilistically based on the weights

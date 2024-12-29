@@ -11,8 +11,8 @@ import time
 from collections import Counter
 import logging
 from queries import generate_query, synthetic_graph
-from walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights,  personalized_complete_pagerank_walk, compute_personalized_pagerank
-
+from walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights,  personalized_complete_pagerank_walk
+from sklearn.metrics import ndcg_score
 
 
 c = 2 #constant for the PPR walk
@@ -66,8 +66,8 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
     """
     start_time = time.time()
     # Get the time slice between two snapshots of the graph
-    snapshot_s, w = personalized_graph(dynamic_graph, queries, timestep)
-    snapshot_t,_ = personalized_graph(dynamic_graph, queries, timestep+1)
+    snapshot_s, w, personalization_nodes = personalized_graph(dynamic_graph, queries, timestep)
+    snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep+1)
     end_time = time.time()
     logging.info(f"Runtime for preprocessing of dummynode{timestep}, {end_time - start_time} seconds")
 
@@ -94,7 +94,7 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
     'edges_added': edges_added,
     'edges_removed': edges_removed
     } 
-    return snapshot_s, changes, w
+    return snapshot_s, changes, w, personalization_nodes
 
 
 def personalized_graph(dynamic_graph, queries, timestep):
@@ -106,7 +106,16 @@ def personalized_graph(dynamic_graph, queries, timestep):
     for node in query_nodes:
         snapshot_s.add_edge(w, node, weight=equal_weight)
 
-    return snapshot_s, w
+    personalization = dict()      #personalization vector for the power method
+    for node in query_nodes:
+        personalization[node] = 1 / len(query_nodes)  # Equal probability for personalization nodes
+
+    # Scale other edges weights to maintain importance
+    for u, v, data in snapshot_s.edges(data=True):
+        if u != w:
+            data['weight'] = data.get('weight', 1) / 10  
+
+    return snapshot_s, w, personalization
 
 
 def write_to_file(data, prefix = "data", file_extension="json", output_directory="./output/"):
@@ -116,6 +125,39 @@ def write_to_file(data, prefix = "data", file_extension="json", output_directory
         print(f"Data saved to {file_name}")
 
 
+def ndcg_metric(top_k_power, top_k_cumsum_walks):
+    shared_keys = set(top_k_power.keys()).intersection(set(top_k_cumsum_walks.keys()))
+    for key in shared_keys:
+        # groundtruth/power iteration ranking
+        power_ranking = list(top_k_power[key].keys()) 
+        power_ranking = [float(x) for x in power_ranking]
+
+        # monte carlo ranking
+        monte_carlo_ranking = list(top_k_cumsum_walks[key].keys()) 
+        monte_carlo_ranking = [float(x) for x in monte_carlo_ranking]
+
+        if len(monte_carlo_ranking)==len(power_ranking):
+            def compute_relevance(true_ranking, predicted_ranking):
+                relevance = []
+                for node in predicted_ranking:
+                    if node in true_ranking:
+                        relevance.append(1)
+                    else:
+                        relevance.append(0)
+                return relevance
+
+            # Compute true relevance based on the groundtruth
+            power_ranking = compute_relevance(monte_carlo_ranking, power_ranking)
+
+            dcg = [power_ranking] #actual dcg
+
+            idcg = [1] * len(power_ranking)  # ideal DCG
+
+            ndcg = ndcg_score(dcg, [idcg]) 	# Compute NDCG
+
+            print("NDCG score:", ndcg, key)
+
+            #return ndcg
 
 
 def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_queries = 5):
@@ -143,7 +185,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
         print("Timestep", timestep)
 
         #time_start = time.time()
-        dyngraph, changes, w = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)   
+        dyngraph, changes, w, personalization_nodes = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)   
         #time_end = time.time()
 
         #print("Time taken for preprocessing", time_end - time_start)
@@ -153,7 +195,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
         starttime = time.time()
         count_start = time.time()
         if timestep == 0:       
-            precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids = generate_random_walks_directed_with_weights(dyngraph, num_walks=3, walk_length=3)
+            precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids = generate_random_walks_directed_with_weights(dyngraph, num_walks=3, walk_length=5)
             random_walks[timestep] = precomputed_walks
             edge_to_walks[timestep] = inverted_edges
             node_to_walks[timestep] = inverted_nodes
@@ -170,7 +212,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
 
             updated_walks, updated_edge_walks, updated_node_walks, updated_walks_to_ids, updated_startnode_ids = update_random_walks_directed_with_weights(dyngraph,  previous_walk_ids, 
                                                                                                             previous_edge_walks,previous_node_walks, previous_startnode_ids, 
-                                                                                                            changes_over_time[timestep - 1], num_walks=3, walk_length=3)
+                                                                                                            changes_over_time[timestep - 1], num_walks=3, walk_length=5)
             random_walks[timestep] = updated_walks  # Save updated walks for future reference
             edge_to_walks[timestep] = updated_edge_walks
             node_to_walks[timestep] = updated_node_walks
@@ -216,48 +258,31 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_qu
         endtime = time.time()
 
         logging.info(f"Runtime for MC method timestep {timestep}: {endtime - starttime} seconds") 
-        #logging.info(f"Update time for MC method timestep {timestep}, {count_end - count_start} seconds")
-
-        # self_start = time.time()
-        # # Compute personalized pagerank for the current snapshot
-        # pagerank_scores = compute_personalized_pagerank(dyngraph, alpha=0.80, num_iterations=100, personalize_node=w)
-        #     # Select the top-k nodes
-        # if pagerank_scores:
-        #     top_k_pagerank = {
-        #         str(key): value  # Convert the key to string before adding to the new dictionary
-        #         for key, value in sorted(pagerank_scores.items(), key=lambda x: x[1], reverse=True)[:k+1]
-        #         if not str(key).lower().startswith('dummy')  # Check if the string representation of the key starts with 'dummy'
-        #     }
-
-        #     top_k_power[timestep]  = top_k_pagerank
-        #     self_end = time.time()
-        #     runtime = self_end - self_start
-
-        #     logging.info(f"Runtime for self power method timestep {timestep}: {runtime} seconds")
 
         #Compute library pagerank for the current snapshot
         library_start = time.time()
-        library_scores = nx.pagerank(dyngraph, alpha=0.80)
+        library_scores = nx.pagerank(dyngraph, alpha=0.80, personalization=personalization_nodes)
             # Select the top-k nodes
-        if library_scores:
-            top_k_pagerank = {
-                str(key): value  
-                for key, value in sorted(library_scores.items(), key=lambda x: x[1], reverse=True)[:k+1]
-                if not str(key).lower().startswith('dummy')  
-            }
+ 
+        top_k_pagerank = {
+            str(key): value  
+            for key, value in sorted(library_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+            if not str(key).lower().startswith('dummy')  
+        }
 
-            top_k_power_nx[timestep]  = top_k_pagerank
-            library_end = time.time()
-            runtime = library_end - library_start
+        top_k_power_nx[timestep]  = top_k_pagerank
+        library_end = time.time()
+        runtime = library_end - library_start
 
-            logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
+        logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
         
-    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks
+    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, top_k_power_nx
 
 
 if __name__=="__main__":
-    nodes = 1000
-    changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks = generate_top_k_summary(n_nodes=nodes)
+    nodes = 10000
+    changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, top_k_power_nx = generate_top_k_summary(n_nodes=nodes)
+    ndcg_metric(top_k_power_nx, top_k_cumsum_walks)
 
 
     # Convert sets to lists in changes_over_time dictionary
@@ -274,6 +299,8 @@ if __name__=="__main__":
     write_to_file(ppr_walks, "ppr_walks")
     write_to_file(ppr_cumsum_walks, "ppr_cumsum_walks")
     write_to_file(top_k_cumsum_walks, "top_k_cumsum_walks")
+    write_to_file(top_k_power_nx, "top_k_power_nx")
+
 
 
 
