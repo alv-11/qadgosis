@@ -1,0 +1,7 @@
+dynetx==0.3.2
+matplotlib==3.10.0
+networkx==3.3
+networkx==3.4.2
+numpy==2.2.1
+pandas==2.2.3
+scikit_learn==1.6.1
