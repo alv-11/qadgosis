@@ -1,0 +1,36 @@
+2025-01-07 12:28:09,779 - Required length of PPR walk 0: 2511.936667228822
+2025-01-07 12:28:43,973 - Actual length of PPR walk 0: 2514
+2025-01-07 12:28:43,975 - Runtime for MC method timestep 0: 34.1953821182251 seconds
+2025-01-07 12:28:44,000 - Runtime for networkx power method timestep 0: 0.02557206153869629 seconds
+2025-01-07 12:28:44,179 - Required length of PPR walk 1: 2511.936667228822
+2025-01-07 12:28:47,633 - Actual length of PPR walk 1: 2523
+2025-01-07 12:28:47,634 - Runtime for MC method timestep 1: 3.4544270038604736 seconds
+2025-01-07 12:28:47,659 - Runtime for networkx power method timestep 1: 0.025444984436035156 seconds
+2025-01-07 12:28:47,836 - Required length of PPR walk 2: 2511.936667228822
+2025-01-07 12:28:51,243 - Actual length of PPR walk 2: 2521
+2025-01-07 12:28:51,245 - Runtime for MC method timestep 2: 3.4081549644470215 seconds
+2025-01-07 12:28:51,271 - Runtime for networkx power method timestep 2: 0.026192188262939453 seconds
+2025-01-07 12:28:51,451 - Required length of PPR walk 3: 2511.936667228822
+2025-01-07 12:28:55,981 - Actual length of PPR walk 3: 2513
+2025-01-07 12:28:55,984 - Runtime for MC method timestep 3: 4.53236198425293 seconds
+2025-01-07 12:28:56,009 - Runtime for networkx power method timestep 3: 0.02554774284362793 seconds
+2025-01-07 12:28:56,186 - Required length of PPR walk 4: 2511.936667228822
+2025-01-07 12:28:59,705 - Actual length of PPR walk 4: 2519
+2025-01-07 12:28:59,707 - Runtime for MC method timestep 4: 3.5206799507141113 seconds
+2025-01-07 12:28:59,733 - Runtime for networkx power method timestep 4: 0.025837182998657227 seconds
+2025-01-07 12:28:59,907 - Required length of PPR walk 5: 2511.936667228822
+2025-01-07 12:29:03,365 - Actual length of PPR walk 5: 2512
+2025-01-07 12:29:03,366 - Runtime for MC method timestep 5: 3.458933115005493 seconds
+2025-01-07 12:29:03,392 - Runtime for networkx power method timestep 5: 0.025938987731933594 seconds
+2025-01-07 12:29:03,566 - Required length of PPR walk 6: 2511.936667228822
+2025-01-07 12:29:07,118 - Actual length of PPR walk 6: 2523
+2025-01-07 12:29:07,120 - Runtime for MC method timestep 6: 3.554530143737793 seconds
+2025-01-07 12:29:07,147 - Runtime for networkx power method timestep 6: 0.02696394920349121 seconds
+2025-01-07 12:29:07,327 - Required length of PPR walk 7: 2511.936667228822
+2025-01-07 12:29:10,919 - Actual length of PPR walk 7: 2512
+2025-01-07 12:29:10,920 - Runtime for MC method timestep 7: 3.593416929244995 seconds
+2025-01-07 12:29:10,947 - Runtime for networkx power method timestep 7: 0.0269930362701416 seconds
+2025-01-07 12:29:11,127 - Required length of PPR walk 8: 2511.936667228822
+2025-01-07 12:29:14,737 - Actual length of PPR walk 8: 2516
+2025-01-07 12:29:14,739 - Runtime for MC method timestep 8: 3.61181902885437 seconds
+2025-01-07 12:29:14,765 - Runtime for networkx power method timestep 8: 0.026679039001464844 seconds

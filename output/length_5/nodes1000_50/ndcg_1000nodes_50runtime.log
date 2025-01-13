@@ -1,0 +1,27 @@
+2024-12-31 15:13:13,393 - Runtime for preprocessing of dummynode0, 0.016048908233642578 seconds
+2024-12-31 15:13:14,375 - Runtime for MC method timestep 0: 0.9797658920288086 seconds
+2024-12-31 15:13:14,379 - Runtime for networkx power method timestep 0: 0.003773212432861328 seconds
+2024-12-31 15:13:14,395 - Runtime for preprocessing of dummynode1, 0.016032934188842773 seconds
+2024-12-31 15:13:14,570 - Runtime for MC method timestep 1: 0.17350506782531738 seconds
+2024-12-31 15:13:14,574 - Runtime for networkx power method timestep 1: 0.0037429332733154297 seconds
+2024-12-31 15:13:14,590 - Runtime for preprocessing of dummynode2, 0.016049861907958984 seconds
+2024-12-31 15:13:14,701 - Runtime for MC method timestep 2: 0.11008882522583008 seconds
+2024-12-31 15:13:14,705 - Runtime for networkx power method timestep 2: 0.0035037994384765625 seconds
+2024-12-31 15:13:14,789 - Runtime for preprocessing of dummynode3, 0.08387184143066406 seconds
+2024-12-31 15:13:14,902 - Runtime for MC method timestep 3: 0.11176514625549316 seconds
+2024-12-31 15:13:14,906 - Runtime for networkx power method timestep 3: 0.0033500194549560547 seconds
+2024-12-31 15:13:14,923 - Runtime for preprocessing of dummynode4, 0.01671600341796875 seconds
+2024-12-31 15:13:15,115 - Runtime for MC method timestep 4: 0.19080591201782227 seconds
+2024-12-31 15:13:15,119 - Runtime for networkx power method timestep 4: 0.0036978721618652344 seconds
+2024-12-31 15:13:15,135 - Runtime for preprocessing of dummynode5, 0.016531944274902344 seconds
+2024-12-31 15:13:15,248 - Runtime for MC method timestep 5: 0.11063981056213379 seconds
+2024-12-31 15:13:15,251 - Runtime for networkx power method timestep 5: 0.003239154815673828 seconds
+2024-12-31 15:13:15,268 - Runtime for preprocessing of dummynode6, 0.017055988311767578 seconds
+2024-12-31 15:13:15,475 - Runtime for MC method timestep 6: 0.20502400398254395 seconds
+2024-12-31 15:13:15,479 - Runtime for networkx power method timestep 6: 0.0037021636962890625 seconds
+2024-12-31 15:13:15,495 - Runtime for preprocessing of dummynode7, 0.01625800132751465 seconds
+2024-12-31 15:13:15,709 - Runtime for MC method timestep 7: 0.21227478981018066 seconds
+2024-12-31 15:13:15,712 - Runtime for networkx power method timestep 7: 0.0033829212188720703 seconds
+2024-12-31 15:13:15,729 - Runtime for preprocessing of dummynode8, 0.016443252563476562 seconds
+2024-12-31 15:13:15,843 - Runtime for MC method timestep 8: 0.11293697357177734 seconds
+2024-12-31 15:13:15,847 - Runtime for networkx power method timestep 8: 0.0035402774810791016 seconds
