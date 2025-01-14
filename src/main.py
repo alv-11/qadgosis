@@ -30,19 +30,32 @@ def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):
 
     # Generate for query each timestep of the dynamic graph
     queries = dict()
-    for timestep in range(len(dynamic_graph)): 
-        G_t = dynamic_graph[timestep]
-            # Convert NetworkX graph to the expected dictionary format
-        graph_dict = {
+    #fixed queries
+    G_t = dynamic_graph[0]
+        # Convert NetworkX graph to the expected dictionary format
+    graph_dict = {
         node: {nbr: data.get('weight', 0) for nbr, data in G_t[node].items()}
         for node in G_t.nodes()
-        }
-
-        timestep_query = dict()
-        for i in range(num_queries):
-            query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
-            timestep_query[i] = query
+    }
+    timestep_query = dict()
+    for i in range(num_queries):
+        query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
+        timestep_query[i] = query
+    for timestep in range(len(dynamic_graph)): 
         queries[timestep] = timestep_query
+    # for timestep in range(len(dynamic_graph)): 
+    #     G_t = dynamic_graph[timestep]
+    #         # Convert NetworkX graph to the expected dictionary format
+    #     graph_dict = {
+    #     node: {nbr: data.get('weight', 0) for nbr, data in G_t[node].items()}
+    #     for node in G_t.nodes()
+    #     }
+
+    #     timestep_query = dict()
+    #     for i in range(num_queries):
+    #         query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
+    #         timestep_query[i] = query
+    #     queries[timestep] = timestep_query
 
     return dynamic_graph, queries
 
@@ -153,7 +166,7 @@ def ndcg_metric(top_k_power, top_k_cumsum_walks):
     return ndcg_values
 
 
-def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 3, num_queries = 20, num_walks = 10 ):
+def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_queries = 20, num_walks = 10 ):
     """convert some part of these to functions"""
     # Initialize a dictionary to store the changes for each timestep
     changes_over_time = dict() #dictionary to store the changes
@@ -286,7 +299,7 @@ if __name__=="__main__":
     c = 2 #constant for the PPR walk
     epsilon = 0.2  # Teleportation probability
     nodes = 10000
-    num_walks = [100, 200, 300]#,5 10, 50, 100]#,0.01 0.005, 0.001, 0.0005] #[0.1, 0.05, 0.01, 0.05]
+    num_walks = [50, 100, 200, 300]#,5 10, 50, 100]#,0.01 0.005, 0.001, 0.0005] #[0.1, 0.05, 0.01, 0.05]
     for per in num_walks:
         print(f"Running for {per} walkss")
         output_directory = f"./output/nodes{nodes}_{per}/"
