@@ -37,12 +37,27 @@ def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):
         node: {nbr: data.get('weight', 0) for nbr, data in G_t[node].items()}
         for node in G_t.nodes()
     }
+
+    #slightly changing queries
     timestep_query = dict()
     for i in range(num_queries):
         query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
         timestep_query[i] = query
+
     for timestep in range(len(dynamic_graph)): 
-        queries[timestep] = timestep_query
+        new_query = timestep_query.copy()
+        for replace_idx in range(3):
+            new_node = random.choice([node for node in graph_dict.keys() if node not in timestep_query.values()])
+            new_query[replace_idx] = new_node
+        queries[timestep] = new_query
+    # #fixed queries 
+    # for i in range(num_queries):
+    #     query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
+    #     timestep_query[i] = query
+    # for timestep in range(len(dynamic_graph)): 
+    #     queries[timestep] = timestep_query
+    
+    #dynamic queries
     # for timestep in range(len(dynamic_graph)): 
     #     G_t = dynamic_graph[timestep]
     #         # Convert NetworkX graph to the expected dictionary format
