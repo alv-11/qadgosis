@@ -12,7 +12,7 @@ from collections import Counter
 import logging
 from queries import generate_query, synthetic_graph
 from walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights,  personalized_complete_pagerank_walk
-from sklearn.metrics import ndcg_score
+from sklearn.metrics import ndcg_score, dcg_score, precision_score
 import csv
 import os
 
@@ -38,7 +38,7 @@ def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):
         for node in G_t.nodes()
     }
 
-    #slightly changing queries
+    # #slightly changing queries
     timestep_query = dict()
     for i in range(num_queries):
         query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
@@ -50,7 +50,8 @@ def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):
             new_node = random.choice([node for node in graph_dict.keys() if node not in timestep_query.values()])
             new_query[replace_idx] = new_node
         queries[timestep] = new_query
-    # #fixed queries 
+    #fixed queries 
+    # timestep_query = dict()
     # for i in range(num_queries):
     #     query = generate_query(graph_dict, path_len=2, qid=i, constraint_index=None)
     #     timestep_query[i] = query
@@ -84,6 +85,7 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
     return: Dictionary representation of the dynamic graph with queries, changes_BetweeenTimesteps and the starting node for PPR walk
     """
     start_time = time.time()
+    #print(queries)
     # Get the time slice between two snapshots of the graph
     snapshot_s, w, personalization_nodes = personalized_graph(dynamic_graph, queries, timestep)
     snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep+1)
@@ -120,6 +122,7 @@ def personalized_graph(dynamic_graph, queries, timestep):
     snapshot_s = copy.deepcopy(dynamic_graph[timestep])#make a copy of the graph for easy reference
 
     query_nodes = list(queries[timestep].values())
+    #print(query_nodes)
     w = f"dummy{timestep}" #dummy_node and start node
     equal_weight = 1 / len(query_nodes)  # Equal weights for all edges
     for node in query_nodes:
@@ -144,7 +147,7 @@ def write_to_file(data, prefix = "data", file_extension="json", output_directory
         print(f"Data saved to {file_name}")
 
 
-def ndcg_metric(top_k_power, top_k_cumsum_walks):
+def precision_metric(top_k_power, top_k_cumsum_walks):
     ndcg_values = dict()
     shared_keys = set(top_k_power.keys()).intersection(set(top_k_cumsum_walks.keys()))
     for key in shared_keys:
@@ -170,15 +173,54 @@ def ndcg_metric(top_k_power, top_k_cumsum_walks):
             # Compute true relevance based on the groundtruth
             power_ranking = compute_relevance(monte_carlo_ranking, power_ranking)
 
-            dcg = [power_ranking] #actual dcg
+            dcg = [power_ranking] #relevant retrieved values
 
-            idcg = [1] * len(power_ranking)  # ideal DCG
+            idcg = [1] * len(power_ranking)  # all retrieved values
 
             ndcg = ndcg_score(dcg, [idcg]) 	# Compute NDCG
+            #precision =precision_score(power_ranking, monte_carlo_ranking, average='micro')
+            #print(ndcg, precision)
             ndcg_values[key] = ndcg
 
             
     return ndcg_values
+
+
+def ndcg_metric(top_k_power, top_k_cumsum_walks):
+    ndcg_scores = dict()
+        
+    precision_scores = dict()
+
+    shared_keys = set(top_k_power.keys()).intersection(set(top_k_cumsum_walks.keys()))
+    for key in shared_keys:
+    
+        # groundtruth/power iteration ranking
+        power = top_k_power[key].keys()
+        # monte carlo ranking
+        monte = top_k_cumsum_walks[key].keys()
+
+
+        # Ensure inputs are array-like
+        monte = np.array(list(monte), dtype=int)
+        power = np.array(list(power), dtype=int)
+
+        # Compute true positives
+        true_positives = np.intersect1d(monte, power)
+
+        # Precision
+        precision = len(true_positives) / len(power)
+
+        y_true = monte.reshape(1, -1)
+        y_score = power.reshape(1, -1)
+
+        ndcg = ndcg_score(y_true, y_score)
+
+        ndcg_scores[key]  = ndcg
+        precision_scores[key] = precision
+
+
+    return ndcg_scores, precision_scores
+
 
 
 def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_queries = 20, num_walks = 10 ):
@@ -202,18 +244,18 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
     # Generate the dynamic graph and queries
     dynamic_graph, queries = graph_and_queries(num_timesteps , n_nodes, m_edges, num_queries)
 
+    budget_for_glimpse = list()
+
     for timestep in range(len(dynamic_graph) - 1): 
         print("Timestep", timestep)
 
         #time_start = time.time()
         dyngraph, changes, w, personalization_nodes = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)   
-        #time_end = time.time()
 
-        #print("Time taken for preprocessing", time_end - time_start)
 
         changes_over_time[timestep] = changes
         n = len(dyngraph.nodes())
-        k = 100 #fixed summary size
+        k = 1000 #fixed summary size
         #k = int(0.1*n) #summary size
         L = (c/epsilon) *k *(n/k)**epsilon #required length of PPR walk
         logging.info(f"Required length of PPR walk {timestep}: {L}") 
@@ -270,22 +312,40 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
         filtered_counter = Counter({key: count for key, count in string_counter.items() if not key.startswith('dummy')})#filter out the dummy node
         
         # Normalize counts by dividing each by the sum of all counts
-        #total_cumulative_walks = sum(filtered_counter.values())
-        #if total_cumulative_walks > 0:
-         #   normalized_cumulative_counts = Counter({
-         #       key: value  / total_cumulative_walks for key, value in filtered_counter.items()
-          #  })
-        #else:
-        #normalized_cumulative_counts = filtered_counter  # Handle edge case of 0 total walks
-        normalized_cumulative_counts =  Counter({
-                key: (value *epsilon) / (n*num_walks) for key, value in filtered_counter.items()
-            })
+        total_cumulative_walks = sum(filtered_counter.values())
+        if total_cumulative_walks > 0:
+           normalized_cumulative_counts = Counter({
+               key: value  / total_cumulative_walks for key, value in filtered_counter.items()
+           })
+        else:
+            normalized_cumulative_counts = filtered_counter  # Handle edge case of 0 total walks
+        #normalized_cumulative_counts =  Counter({
+        #        key: (value *epsilon) / (n*num_walks) for key, value in filtered_counter.items()
+        #    })
       
 
         # Get the top-k items based on normalized probabilities
         top_k_cumulative = dict(normalized_cumulative_counts.most_common(k))
         top_k_cumsum_walks[timestep] = top_k_cumulative
         endtime = time.time()
+
+        graph = {
+        str(node): {nbr: data.get('weight', 0) for nbr, data in dyngraph[node].items()}
+        for node in dyngraph.nodes()
+        }
+
+        #determine the number of edges for glimpse summary
+        unique_edges = set()
+        for node in top_k_cumulative.keys():
+            neighbors = list(graph[node].keys())
+            neighbors_summary = np.intersect1d(neighbors, list(top_k_cumulative.keys()))
+
+            for neighbor in neighbors_summary:
+                unique_edges.add(tuple(sorted((node, str(neighbor)))))
+  
+        budget_for_glimpse.append(len(unique_edges))
+
+
 
         logging.info(f"Runtime for MC method timestep {timestep}: {endtime - starttime} seconds") 
 
@@ -305,6 +365,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
         runtime = library_end - library_start
 
         logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
+    print(budget_for_glimpse)
         
     return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, top_k_power_nx
 
@@ -312,9 +373,9 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
 if __name__=="__main__":
 
     c = 2 #constant for the PPR walk
-    epsilon = 0.2  # Teleportation probability
+    epsilon = 0.20  # Teleportation probability
     nodes = 10000
-    num_walks = [50, 100, 200, 300]#,5 10, 50, 100]#,0.01 0.005, 0.001, 0.0005] #[0.1, 0.05, 0.01, 0.05]
+    num_walks = [10,100]#,5 10, 50, 100]#,0.01 0.005, 0.001, 0.0005] #[0.1, 0.05, 0.01, 0.05]
     for per in num_walks:
         print(f"Running for {per} walkss")
         output_directory = f"./output/nodes{nodes}_{per}/"
@@ -328,11 +389,13 @@ if __name__=="__main__":
         )
 
         changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, top_k_power_nx = generate_top_k_summary(n_nodes=nodes, num_walks = per)
-        ndcg =  ndcg_metric(top_k_power_nx, top_k_cumsum_walks)
-        file_name = f"{output_directory}ndcg_{nodes}nodes_{per}walks.csv"
-        with open(file_name,'w') as f:
-            w = csv.writer(f)
-            w.writerows(ndcg.items())
+        ndcg, precision =  ndcg_metric(top_k_power_nx, top_k_cumsum_walks)
+        df_scores = (pd.Series(ndcg).to_frame('ndcg').join(pd.Series(precision).to_frame('precision'), how='outer'))
+        print(df_scores)
+
+        
+        file_name = f"{output_directory}scores_{nodes}nodes_{per}walks.csv"
+        df_scores.to_csv(file_name)
 
 
         # Convert sets to lists in changes_over_time dictionary
