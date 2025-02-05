@@ -10,11 +10,13 @@ import copy
 import time
 from collections import Counter
 import logging
-from queries import generate_query, synthetic_graph
-from walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights,  personalized_complete_pagerank_walk
+#from queries import generate_query, synthetic_graph
+from src.qadgosis.walks import generate_random_walks_directed_with_weights, update_random_walks_directed_with_weights,  personalized_complete_pagerank_walk
 from sklearn.metrics import ndcg_score, dcg_score, precision_score
 import csv
 import os
+#from line_profiler import LineProfiler
+
 
 
 
@@ -77,7 +79,7 @@ def graph_and_queries(num_timesteps, n_nodes , m_edges, num_queries):
 
 
 
-def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
+def graph_changes_with_dummy_node(dynamic_graph, queries, timestep, par='qadgosis'):
     """
     Add dummy nodes and edges to the dynamic graph to represent queries.
     param dynamic_graph: Dictionary representation of the dynamic graph.
@@ -85,10 +87,13 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
     return: Dictionary representation of the dynamic graph with queries, changes_BetweeenTimesteps and the starting node for PPR walk
     """
     start_time = time.time()
-    #print(queries)
     # Get the time slice between two snapshots of the graph
     snapshot_s, w, personalization_nodes = personalized_graph(dynamic_graph, queries, timestep)
-    snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep+1)
+    try:
+        snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep+1)
+    except:
+        snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep)
+
     end_time = time.time()
     #logging.info(f"Runtime for preprocessing of dummynode{timestep}, {end_time - start_time} seconds")
 
@@ -121,7 +126,7 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep):
 def personalized_graph(dynamic_graph, queries, timestep):
     snapshot_s = copy.deepcopy(dynamic_graph[timestep])#make a copy of the graph for easy reference
 
-    query_nodes = list(queries[timestep].values())
+    query_nodes = list(queries[timestep])
     #print(query_nodes)
     w = f"dummy{timestep}" #dummy_node and start node
     equal_weight = 1 / len(query_nodes)  # Equal weights for all edges
@@ -223,7 +228,7 @@ def ndcg_metric(top_k_power, top_k_cumsum_walks):
 
 
 
-def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_queries = 20, num_walks = 10 ):
+def generate_top_k_summary(num_timesteps = 5, n_nodes=1000, m_edges = 5, num_queries = 20, num_walks = 5, dynamic_graph = None , queries=None, c=2, epsilon=0.2, k=100):
     """convert some part of these to functions"""
     # Initialize a dictionary to store the changes for each timestep
     changes_over_time = dict() #dictionary to store the changes
@@ -235,27 +240,30 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
     ppr_walks = dict() #dictionary to store the complete ppr 
     ppr_cumsum_walks = dict() #dictionary to store the cumulative sum of the ppr walks
     top_k_cumsum_walks = dict()#dictionary to store the top k walks 
-    top_k_power = dict() #dictionary to store the top k for the power method
-    top_k_power_nx = dict() #dictionary to store the top k for the power method using networkx
+
 
     counters = dict() #dictionary to store the counters for each node 
     cumulative_counts = Counter()#counter to store the cumulative counts of the ppr walks 
 
     # Generate the dynamic graph and queries
-    dynamic_graph, queries = graph_and_queries(num_timesteps , n_nodes, m_edges, num_queries)
+    #dynamic_graph, queries #= graph_and_queries(num_timesteps , n_nodes, m_edges, num_queries)
 
     budget_for_glimpse = list()
 
-    for timestep in range(len(dynamic_graph) - 1): 
+    for timestep in range(len(dynamic_graph)): 
         print("Timestep", timestep)
 
         #time_start = time.time()
-        dyngraph, changes, w, personalization_nodes = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)   
+        dyngraph, changes, w, personalization_nodes = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)  
+        print(len(dyngraph.nodes()), len(dyngraph.edges()))
+        for key, value in changes.items():
+            print(key, len(value))
+
 
 
         changes_over_time[timestep] = changes
         n = len(dyngraph.nodes())
-        k = 1000 #fixed summary size
+        #k = 100 #fixed summary size
         #k = int(0.1*n) #summary size
         L = (c/epsilon) *k *(n/k)**epsilon #required length of PPR walk
         logging.info(f"Required length of PPR walk {timestep}: {L}") 
@@ -266,6 +274,7 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
         count_start = time.time()
         if timestep == 0:       
             precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids = generate_random_walks_directed_with_weights(dyngraph, num_walks, walk_length=10)
+            #print(precomputed_walks)
             random_walks[timestep] = precomputed_walks
             edge_to_walks[timestep] = inverted_edges
             node_to_walks[timestep] = inverted_nodes
@@ -289,6 +298,8 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
             walks_to_ids[timestep] = updated_walks_to_ids
             startnode_to_ids[timestep] = updated_startnode_ids
             R = copy.deepcopy(updated_walks)
+
+
 
         count_end = time.time()
         # Generate the directed graph for the graph in the current timestep
@@ -333,27 +344,58 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
         str(node): {nbr: data.get('weight', 0) for nbr, data in dyngraph[node].items()}
         for node in dyngraph.nodes()
         }
-
+        print(len(top_k_cumulative.keys()))
         #determine the number of edges for glimpse summary
-        unique_edges = set()
-        for node in top_k_cumulative.keys():
-            neighbors = list(graph[node].keys())
-            neighbors_summary = np.intersect1d(neighbors, list(top_k_cumulative.keys()))
+        # unique_edges = set()
+        # for node in top_k_cumulative.keys():
+        #     neighbors = list(graph[node].keys())
+        #     neighbors_summary = np.intersect1d(neighbors, list(top_k_cumulative.keys()))
 
-            for neighbor in neighbors_summary:
-                unique_edges.add(tuple(sorted((node, str(neighbor)))))
+        #     for neighbor in neighbors_summary:
+        #         unique_edges.add(tuple(sorted((node, str(neighbor)))))
   
-        budget_for_glimpse.append(len(unique_edges))
+        # budget_for_glimpse.append(len(unique_edges))
 
 
 
         logging.info(f"Runtime for MC method timestep {timestep}: {endtime - starttime} seconds") 
 
+        # #Compute library pagerank for the current snapshot
+        # library_start = time.time()
+        # library_scores = nx.pagerank(dyngraph, alpha=0.80, personalization=personalization_nodes)
+        #     # Select the top-k nodes
+ 
+        # top_k_pagerank = {
+        #     str(key): value  
+        #     for key, value in sorted(library_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+        #     if not str(key).lower().startswith('dummy')  
+        # }
+
+        # top_k_power_nx[timestep]  = top_k_pagerank
+        # library_end = time.time()
+        # runtime = library_end - library_start
+
+        # logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
+    print(budget_for_glimpse)
+        
+    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks#, top_k_power_nx
+
+
+
+def pagerank(dynamic_graph, queries, k):
+    top_k_power_nx = dict()
         #Compute library pagerank for the current snapshot
+    for timestep in range(len(dynamic_graph)): 
+        print("Timestep", timestep)
+
+            #time_start = time.time()
+        dyngraph, _, personalization_nodes = personalized_graph(dynamic_graph, queries, timestep)
+
+
         library_start = time.time()
         library_scores = nx.pagerank(dyngraph, alpha=0.80, personalization=personalization_nodes)
             # Select the top-k nodes
- 
+
         top_k_pagerank = {
             str(key): value  
             for key, value in sorted(library_scores.items(), key=lambda x: x[1], reverse=True)[:k]
@@ -364,10 +406,8 @@ def generate_top_k_summary(num_timesteps = 10, n_nodes=1000, m_edges = 5, num_qu
         library_end = time.time()
         runtime = library_end - library_start
 
-        logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
-    print(budget_for_glimpse)
-        
-    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, top_k_power_nx
+    logging.info(f"Runtime for networkx power method timestep {timestep}: {runtime} seconds")
+    return top_k_power_nx
 
 
 if __name__=="__main__":
@@ -410,9 +450,9 @@ if __name__=="__main__":
         #write_to_file(changes_over_time, "changes_over_time")
         #write_to_file(random_walks, "random_walks")    
         #write_to_file(ppr_walks, "ppr_walks")
-        write_to_file(ppr_cumsum_walks, "ppr_cumsum_walks", output_directory= output_directory)
+        #write_to_file(ppr_cumsum_walks, "ppr_cumsum_walks", output_directory= output_directory)
         write_to_file(top_k_cumsum_walks, "top_k_cumsum_walks", output_directory= output_directory)
-        write_to_file(top_k_power_nx, "top_k_power_nx", output_directory=output_directory)
+        #write_to_file(top_k_power_nx, "top_k_power_nx", output_directory=output_directory)
 
 
 
