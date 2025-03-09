@@ -30,4 +30,18 @@ If you want to use the same queries stored, change --save-queries to --load-quer
 I have fixed the summary size for GLIMPSE at 200 based on the average number of triples obtained for TOP-100 QADGOSIS and PageRank.
 
 ### 3. kg_cplusplus
+To create  an int version of the graph which is required for the C++ code, run:
+`python3 src/util.py`
 
+To compile the C++ code, navigate to `src/qadgsis` and run:
+
+`python setup.py clean`
+
+`python setup.py build_ext --inplace`
+
+`python setup.py install`
+
+
+Finally return to the main directory `kg_cplusplus` and run:
+
+`python3 montecarlo.py`
