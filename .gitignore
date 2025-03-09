@@ -1,4 +1,4 @@
 *.json
 *.log
 *.csv
-
+*.gz
