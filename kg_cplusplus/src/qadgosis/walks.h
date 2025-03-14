@@ -8,6 +8,17 @@
 #include <vector>
 #include <random>
 #include <ctime>
+#include <cassert>
+#include <memory>
+#include <future>
+#include <thread>
+#include <mutex>
+#include <chrono>
+#include <sstream>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <uuid/uuid.h>
+#include <iostream>
 
 struct pair_hash {
     template <typename T1, typename T2>

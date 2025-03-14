@@ -82,7 +82,7 @@ graphs = dict()
 logs =dict()
 triples_no_mc = dict()
 triples_no_pr = dict()
-dbpedia_dir = '../PKG_EXP/DBpedia/dbpedia_subgraphs'
+dbpedia_dir = '../PKG_EXP/DBpedia/dbpedia_subgraphs_int'
 for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
     graph = os.path.join(dbpedia_dir, file_name)            
     KG = DBPedia(rdf_gz=graph)
@@ -103,10 +103,10 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
     KG.update_user(user)
     graphs[i] = KG
 
-    topic_mids = random.sample(list(KG.triples_.keys()), k=4)
+    topic_mids = random.sample(list(KG.triples_.keys()), k=5)
 
     query_log = query_log_by_mids(
-            KG, topic_mids, 20, topic_dist=np.ones(len(topic_mids))/len(topic_mids),
+            KG, topic_mids, 200, topic_dist=np.ones(len(topic_mids))/len(topic_mids),
             shuffle=False,
             random_query_prob=0)
     logs[i] = query_log
@@ -115,8 +115,10 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
     queries_[i] = query
 
 K=100
-_, _, _, _, top_k_cumsum_walks= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
-top_k_power_nx = qadgosis.pagerank(dynamic_graph = dynagraph, queries = queries_, k=K)
+_, random_walks, _, _, top_k_cumsum_walks= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
+qadgosis.write_to_file(random_walks, "random_walks_python")    
+
+#top_k_power_nx = qadgosis.pagerank(dynamic_graph = dynagraph, queries = queries_, k=K)
 
 #if qadgosis.check_summary(S, KG):
 def process_summary_graph(top_k_nodes_dict, graphs, label):
@@ -157,7 +159,7 @@ def process_summary_graph(top_k_nodes_dict, graphs, label):
 
 # Process both top_k_cumsum_walks and top_k_power_nx
 triples_no_mc = process_summary_graph(top_k_cumsum_walks, graphs, "Cumsum Walks")
-triples_no_pr = process_summary_graph(top_k_power_nx, graphs, "Pagerank")
+#triples_no_pr = process_summary_graph(top_k_power_nx, graphs, "Pagerank")
 
 
 

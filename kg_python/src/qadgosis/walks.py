@@ -232,10 +232,13 @@ def update_random_walks_directed_with_weights(dyngraph,  ids_to_walks, inverted_
     print(f"Time taken to add nodes: {node_addition_end_time - node_addition_start_time} seconds")
         
     #reconstruct the precomputed walks
+    precomputed_start_time = time.time()
     precomputed_walks = {}
     for node, walk_ids in startnode_walk_ids.items():
         precomputed_walks[node] = [ids_to_walks[walk_id] for walk_id in walk_ids if walk_id in ids_to_walks]
-
+    
+    precomputed_end_time = time.time()
+    print(f"Time taken to reassign precomputed walks: {precomputed_end_time - precomputed_start_time} seconds")
     return precomputed_walks, inverted_edges, inverted_nodes, ids_to_walks, startnode_walk_ids
 
  

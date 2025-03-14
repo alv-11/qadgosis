@@ -84,6 +84,7 @@ triples_no_mc = dict()
 triples_no_pr = dict()
 dbpedia_dir = '../PKG_EXP/DBpedia/dbpedia_subgraphs_int'
 for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
+    time_start = time()
     graph = os.path.join(dbpedia_dir, file_name)            
     KG = DBPedia(rdf_gz=graph)
     #K = int(0.0001 * KG.number_of_triples())
@@ -103,10 +104,9 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
     KG.update_user(user)
     graphs[i] = KG
 
-    topic_mids = random.sample(list(KG.triples_.keys()), k=5)
-
+    topic_mids = random.sample(list(KG.triples_.keys()), k=2)
     query_log = query_log_by_mids(
-            KG, topic_mids, 20, topic_dist=np.ones(len(topic_mids))/len(topic_mids),
+            KG, topic_mids, 200, topic_dist=np.ones(len(topic_mids))/len(topic_mids),
             shuffle=False,
             random_query_prob=0)
     logs[i] = query_log
@@ -114,10 +114,15 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
     #print(query)
 
     queries_[i] = query
+    time_end = time()
+    print(f"Time taken for processing {file_name}: {time_end - time_start} seconds")
 
 K=100
-_, _, _, _, top_k_cumsum_walks= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
+changes_over_time, random_walks, _, _, top_k_cumsum_walks= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
 #top_k_power_nx = qadgosis.pagerank(dynamic_graph = dynagraph, queries = queries_, k=K)
+#qadgosis.write_to_file(random_walks, "random_walks_c++") 
+
+
 
 #if qadgosis.check_summary(S, KG):
 def process_summary_graph(top_k_nodes_dict, graphs, label):
@@ -127,10 +132,12 @@ def process_summary_graph(top_k_nodes_dict, graphs, label):
         KG = graphs[key]
         top_k_nodes = top_k_nodes_dict[key]
 
-
-
-
+    # Create a summary graph
+        time_start = time()
         S = SummaryGraph(KG, top_k_nodes.keys())
+        time_end = time()
+        print(f"Time taken for processing summary {key}: {time_end - time_start} seconds")
+
         print(f"\n[{label}] Processing timestap: {key}")
         print("top_k", len(top_k_nodes.keys()))
         #print("attributes", (S.__dict__))
@@ -145,10 +152,12 @@ def process_summary_graph(top_k_nodes_dict, graphs, label):
         merged_logs = [logs[key] for key in keys[:target_index + 1]]
         merged_logs = list(chain.from_iterable(value if isinstance(value, list) else [value] for value in merged_logs))
         #print(merged_logs)
+        log = logs[key]
+        #print(len(merged_logs))
 
         # Compute metrics
-        total_F1, total_precision, total_recall = total_query_log_metrics(S, merged_logs)
-        avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, merged_logs)
+        total_F1, total_precision, total_recall = total_query_log_metrics(S, log)
+        avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, log)
 
         # Logging
         if DETAILED_LOGGING:

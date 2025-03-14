@@ -31,7 +31,7 @@ from src.metrics import total_query_log_metrics, average_query_log_metrics
 KG_MAPPING = {
     'YAGO': YAGO(rdf_gz='yagoFacts.gz', query_dir='final/', mid_dir='by-mid/'),
     'Freebase': Freebase(query_dir='queries/final/'),
-    'DBPedia': '../PKG_EXP/DBpedia/dbpedia_subgraphs', #DBPedia(),
+    'DBPedia': '../PKG_EXP/DBpedia/dbpedia_subgraphs_int', #DBPedia(),
     'MetaQA': MetaQA(ablation=0),
 }
 
@@ -80,6 +80,7 @@ def answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc
                     #print(S.__dict__['number_of_triples_'])
 
                     runtime = time() - t0
+                    print("runtime: ", runtime)
                     update_time_list.append(runtime)
 
 
@@ -131,6 +132,7 @@ def answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc
                     #print((S.__dict__['triples_'].keys()))
                     #print(S.__dict__['number_of_triples_'])
                     runtime = time() - t0
+                    print("runtime: ", runtime)
                     update_time_list.append(runtime)
 
 

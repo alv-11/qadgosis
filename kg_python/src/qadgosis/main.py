@@ -145,7 +145,7 @@ def personalized_graph(dynamic_graph, queries, timestep):
     return snapshot_s, w, personalization
 
 
-def write_to_file(data, prefix = "data", file_extension="json", output_directory="./output/"):
+def write_to_file(data, prefix = "data", file_extension="json", output_directory="../output/"):
     file_name = f"{output_directory}{prefix}.{file_extension}"
     with open(file_name, 'w') as f:
         json.dump(data, f, indent = 4)
@@ -281,6 +281,12 @@ def generate_top_k_summary(num_timesteps = 5, n_nodes=1000, m_edges = 5, num_que
             walks_to_ids[timestep] = walk_ids
             startnode_to_ids[timestep] = random_walk_ids
             R = copy.deepcopy(precomputed_walks)
+            # for i, j in R.items():
+            #     lengths = [len(inner_list) for inner_list in j]
+            #     print(i, max(lengths))
+
+            print("precomputed_walks keys", len(precomputed_walks.keys()))
+            print("number of graph nodes", len(dyngraph.nodes()))
 
         else:
             previous_edge_walks = edge_to_walks[timestep - 1].copy()  # Get the walks from the previous timestep
@@ -298,6 +304,9 @@ def generate_top_k_summary(num_timesteps = 5, n_nodes=1000, m_edges = 5, num_que
             walks_to_ids[timestep] = updated_walks_to_ids
             startnode_to_ids[timestep] = updated_startnode_ids
             R = copy.deepcopy(updated_walks)
+            
+            print("precomputed_walks keys", len(updated_walks.keys()))
+            print("number of graph nodes", len(dyngraph.nodes()))
 
 
 

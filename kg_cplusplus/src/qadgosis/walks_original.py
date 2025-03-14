@@ -155,7 +155,6 @@ def update_random_walks_directed_with_weights(dyngraph,  ids_to_walks, inverted_
             last_node = walk[-1] #this will be the last node in the walk, works for new edges starting at those nodes
             if last_node not in graph or not graph[last_node]:
                 if last_node not in skipped_nodes:
-                    #print("skipped node",last_node)
                     skipped_nodes.add(last_node)
                 
                 break
@@ -296,7 +295,7 @@ def personalized_complete_pagerank_walk(w, L, epsilon, precomputed_walks, graph)
                 Pw.append(w)
                 walk_length += len(walk_segment) + 1
                 u = w  # Reset to the source node
-              #  print(f"Use precomputed walk segment: {walk_segment} and teleportation to {w}; Current node: {u}. Current walk: {Pw}")
+                #print(f"Use precomputed walk segment: {walk_segment} and teleportation to {w}; Current node: {u}. Current walk: {Pw}")
                 continue
 
             else:
@@ -307,7 +306,7 @@ def personalized_complete_pagerank_walk(w, L, epsilon, precomputed_walks, graph)
                     Pw.append(neighbor)
                     walk_length += 1
                     u = neighbor
-                 #   print(f"Already fetched, move to neighbor {neighbor}.Current node: {u}. Current walk: {Pw}")
+                    #print(f"Already fetched, move to neighbor {neighbor}.Current node: {u}. Current walk: {Pw}")
                 else:
                     # Fetch operation (if u has no neighbors or precomputed walks are empty)
                     try:
