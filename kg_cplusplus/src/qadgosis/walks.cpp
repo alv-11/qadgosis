@@ -1,6 +1,70 @@
 
 #include "walks.h"
 
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+namespace py = pybind11;
+
+//void generate_top_k_summary(const int num_timestep=5, const int n_nodes=1000, const int m_edges=5, const num_walks=100, const std::unordered_map<int, std::map<int, std::unordered_map<std::string, double>>>& dyngraph){}
+
+
+// Helper types for data structures
+typedef std::unordered_map<int, int> NestedMap;
+typedef std::unordered_map<int, NestedMap> DefaultDict;
+//typedef std::map<int, int> Counter;
+
+// Function to initialize the data structures
+std::tuple<
+    std::unordered_map<int, int>,   // changes_over_time
+    DefaultDict,                    // random_walks
+    DefaultDict,                    // edge_to_walks
+    DefaultDict,                    // node_to_walks
+    DefaultDict,                    // walks_to_ids
+    DefaultDict,                    // startnode_to_ids
+    std::unordered_map<int, int>,   // ppr_walks
+    std::unordered_map<int, int>,   // ppr_cumsum_walks
+    std::unordered_map<int, int>   // top_k_cumsum_walks
+    //Counter                         // cumulative_counts
+> initializeDataStructures() {
+    return std::make_tuple(
+        std::unordered_map<int, int>(),   // changes_over_time
+        DefaultDict(),                    // random_walks
+        DefaultDict(),                    // edge_to_walks
+        DefaultDict(),                    // node_to_walks
+        DefaultDict(),                    // walks_to_ids
+        DefaultDict(),                    // startnode_to_ids
+        std::unordered_map<int, int>(),   // ppr_walks
+        std::unordered_map<int, int>(),   // ppr_cumsum_walks
+        std::unordered_map<int, int>()   // top_k_cumsum_walks
+        //Counter()                         // cumulative_counts
+    );
+}
+
+double calculateRequiredWalkLength(double c, double epsilon, double k, double n) {
+    return (c / epsilon) * k * std::pow(n / k, epsilon);
+}
+
+std::unordered_map<int, std::unordered_map<int, double>> preprocessGraph(const std::unordered_map<int, std::map<int, std::unordered_map<std::string, double>>>& dyngraph) {
+    std::unordered_map<int, std::unordered_map<int, double>> weightedGraph;
+    // Iterate through the nodes in the dynamic graph
+    for (const auto& node : dyngraph) {
+        int nodeId = node.first;
+
+        // Create an inner map for the neighbors of the current node
+        std::unordered_map<int, double> neighbors;
+        for (const auto& neighbor : node.second) {
+            int neighborId = neighbor.first;
+            double weight = neighbor.second.count("weight") ? neighbor.second.at("weight") : 0.1;
+            neighbors[neighborId] = weight;
+        }
+
+        // Add the node and its neighbors to the weighted graph
+        weightedGraph[nodeId] = neighbors;
+    }
+
+    return weightedGraph;
+}
+
 
 namespace py = pybind11;
 
@@ -464,6 +528,7 @@ RandomWalksResult* update_random_walks_directed_with_weights(
 
 
 
+
 // Binding the C++ functions to Python using pybind11
 PYBIND11_MODULE(walks, m) {
     m.doc() = "Pybind11 module for weighted random walks on a directed graph";
@@ -492,7 +557,11 @@ PYBIND11_MODULE(walks, m) {
           "Generate random walks for a directed graph with weights",
           py::arg("graph"), py::arg("num_walks"), py::arg("walk_length"));
 
-
+    /*m.def("generate_top_k_summary", &wrap_generate_top_k_summary,
+    "Function that generates a top‑k summary from dynamic graph updates.",
+    py::arg("num_timesteps"), py::arg("n_nodes"), py::arg("m_edges"),
+    py::arg("num_queries"), py::arg("num_walks"),
+    py::arg("c"), py::arg("epsilon"), py::arg("k"));*/
     
     m.def("update_random_walks_directed_with_weights",
         [](const std::unordered_map<int, std::unordered_map<int, float>>& py_graph,

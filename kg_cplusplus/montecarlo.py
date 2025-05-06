@@ -12,6 +12,7 @@ import os
 from itertools import chain
 import networkx as nx
 import src.qadgosis.main  as qadgosis
+#import walks
 #import src.qadgosis.walks  as walks
 import random
 import numpy as np
@@ -111,13 +112,16 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
             random_query_prob=0)
     logs[i] = query_log
     query = [item['Parse']['TopicEntityMid'] for item in query_log]
-    #print(query)
 
     queries_[i] = query
     time_end = time()
     print(f"Time taken for processing {file_name}: {time_end - time_start} seconds")
 
 K=100
+
+
+#c_dynagraph = [elm for elm in dynagraph.values()]
+
 changes_over_time, random_walks, _, _, top_k_cumsum_walks= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
 #top_k_power_nx = qadgosis.pagerank(dynamic_graph = dynagraph, queries = queries_, k=K)
 #qadgosis.write_to_file(random_walks, "random_walks_c++") 

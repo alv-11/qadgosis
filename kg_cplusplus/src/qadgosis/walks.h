@@ -19,6 +19,13 @@
 #include <pybind11/stl.h>
 #include <uuid/uuid.h>
 #include <iostream>
+#include <map>
+#include <algorithm>
+#include <cmath>
+#include <ctime>
+#include <set>
+#include <sstream>
+
 
 struct pair_hash {
     template <typename T1, typename T2>

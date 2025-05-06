@@ -71,10 +71,13 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep, par='qadgosi
     start_time = time.time()
     # Get the time slice between two snapshots of the graph
     snapshot_s, w, personalization_nodes = personalized_graph(dynamic_graph, queries, timestep)
-    try:
+    print(len(dynamic_graph))
+    if (len(dynamic_graph)-1 == timestep):
+           snapshot_t = snapshot_s
+    else:
         snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep+1)
-    except:
-        snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep)
+    #except:
+    #    snapshot_t,_ ,_ = personalized_graph(dynamic_graph, queries, timestep)
 
     end_time = time.time()
     #logging.info(f"Runtime for preprocessing of dummynode{timestep}, {end_time - start_time} seconds")
@@ -107,10 +110,10 @@ def graph_changes_with_dummy_node(dynamic_graph, queries, timestep, par='qadgosi
 
 
 def personalized_graph(dynamic_graph, queries, timestep):
-    snapshot_s = copy.deepcopy(dynamic_graph[timestep])#make a copy of the graph for easy reference
+    snapshot_s = dynamic_graph[timestep] #copy.deepcopy(dynamic_graph[timestep])#make a copy of the graph for easy reference
 
     query_nodes = list(queries[timestep])
-    #print(query_nodes)
+    print(query_nodes)
     #w = f"dummy{timestep}" #dummy_node and start node
     w = int('{}{}'.format(123456789, timestep))
 
@@ -142,7 +145,7 @@ def precision_metric(top_k_power, top_k_cumsum_walks):
     shared_keys = set(top_k_power.keys()).intersection(set(top_k_cumsum_walks.keys()))
     for key in shared_keys:
         # groundtruth/power iteration ranking
-        power_ranking = list(top_k_power[key].keys()) 
+        power_ranking = list(top_k_power[key].keys())
         power_ranking = [float(x) for x in power_ranking]
 
         # monte carlo ranking
@@ -220,161 +223,133 @@ def safe_int(value):
 
 
 
-def generate_top_k_summary(num_timesteps = 5, n_nodes=1000, m_edges = 5, num_queries = 20, num_walks = 100, dynamic_graph = None , queries=None, c=2, epsilon=0.2, k=50):
-    """convert some part of these to functions"""
-    # Initialize a dictionary to store the changes for each timestep
-    changes_over_time = dict() #dictionary to store the changes
-    random_walks = defaultdict(dict) #dictionary to store the random walks for each node 
-    edge_to_walks = defaultdict(dict) #dictionary to store the edges to walk_ids 
-    node_to_walks = defaultdict(dict) #dictionary to store the nodes to walk_ids
-    walks_to_ids = defaultdict(dict) #dictionary to store the walks to ids 
-    startnode_to_ids = defaultdict(dict) #dictionary to store the random walk ids for each node
-    ppr_walks = dict() #dictionary to store the complete ppr 
-    ppr_cumsum_walks = dict() #dictionary to store the cumulative sum of the ppr walks
-    top_k_cumsum_walks = dict()#dictionary to store the top k walks 
 
-    print("generating top", k)
+def initialize_data_structures():
+    """Initialize all required data structures."""
+    return (
+        dict(),  # changes_over_time
+        defaultdict(dict),  # random_walks
+        defaultdict(dict),  # edge_to_walks
+        defaultdict(dict),  # node_to_walks
+        defaultdict(dict),  # walks_to_ids
+        defaultdict(dict),  # startnode_to_ids
+        dict(),  # ppr_walks
+        dict(),  # ppr_cumsum_walks
+        dict(),  # top_k_cumsum_walks
+        Counter()  # cumulative_counts
+    )
 
-    counters = dict() #dictionary to store the counters for each node 
-    cumulative_counts = Counter()#counter to store the cumulative counts of the ppr walks 
+def preprocess_graph(dyngraph):
+    """Convert the dynamic graph into a weighted graph."""
+    return {
+        int(node): {int(nbr): float(data.get('weight', 0.1)) for nbr, data in dyngraph[node].items()}
+        for node in dyngraph.nodes()
+    }
 
-    # Generate the dynamic graph and queries
-    #dynamic_graph, queries #= graph_and_queries(num_timesteps , n_nodes, m_edges, num_queries)
+def calculate_required_walk_length(c, epsilon, k, n):
+    """Calculate the required length of the PPR walk."""
+    return (c / epsilon) * k * (n / k) ** epsilon
 
-    budget_for_glimpse = list()
+def generate_random_walks(weighted_graph, num_walks):
+    """Generate random walks for the first timestep."""
+    walks_result = walks.generate_random_walks_directed_with_weights(weighted_graph, num_walks, walk_length=10)
+    return (
+        walks_result.precomputed_walks,
+        walks_result.inverted_edges,
+        walks_result.inverted_nodes,
+        walks_result.walk_ids,
+        walks_result.random_walk_ids
+    )
 
-    for timestep in range(len(dynamic_graph)): 
-        print("Timestep", timestep)
+def update_random_walks(timestep, weighted_graph, previous_data, changes, num_walks):
+    """Update random walks based on changes from the previous timestep."""
+    walks_result = walks.update_random_walks_directed_with_weights(
+        weighted_graph,
+        previous_data["walks_to_ids"],
+        previous_data["edge_to_walks"],
+        previous_data["node_to_walks"],
+        previous_data["startnode_to_ids"],
+        changes,
+        num_walks,
+        walk_length=10
+    )
+    return walks_result
 
-        dyngraph, changes, w, personalization_nodes = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)  
+def process_walk_results(precomputed_walks):
+    """Convert walk data to string format."""
+    return {str(key): [list(map(str, inner_list)) for inner_list in value] for key, value in precomputed_walks.items()}
 
+def compute_personalized_pagerank(w, L, epsilon, R, directed_graph):
+    """Perform the Personalized PageRank walk computation."""
+    start_time = time.time()
+    walk = personalized_complete_pagerank_walk(w, L, epsilon, R, directed_graph)
+    print(f"Time taken for PPR walk: {time.time() - start_time} seconds")
+    return walk
 
-        changes_over_time[timestep] = changes
-        #print(changes.values())
-        n = len(dyngraph.nodes())
-        #k = 50 #fixed summary size
-        #k = int(0.1*n) #summary size
-        L = (c/epsilon) *k *(n/k)**epsilon #required length of PPR walk
-        logging.info(f"Required length of PPR walk {timestep}: {L}") 
+def calculate_top_k_cumulative(walk, cumulative_counts, k):
+    """Update cumulative counts and calculate the top-k nodes."""
+    cumulative_counts.update(walk)
+    total_cumulative_walks = sum(cumulative_counts.values())
+    if total_cumulative_walks > 0:
+        normalized_counts = Counter({
+            key: count / total_cumulative_walks for key, count in cumulative_counts.items()
+        })
+    else:
+        normalized_counts = cumulative_counts  # Handle edge case of 0 total walks
+    return dict(normalized_counts.most_common(k))
 
-        print(L, "Required length of PPR walk") 
+def generate_top_k_summary(num_timesteps=5, n_nodes=1000, m_edges=5, num_queries=20, num_walks=100, dynamic_graph=None, queries=None, c=2, epsilon=0.2, k=50):
+    """Main function for generating top-k summaries."""
+    (changes_over_time, random_walks, edge_to_walks, node_to_walks, walks_to_ids,
+     startnode_to_ids, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, cumulative_counts) = initialize_data_structures()
 
-        weighted_graph = {
-            int(node): {int(nbr): float(data.get('weight', 0.1)) for nbr, data in dyngraph[node].items()}
-            for node in dyngraph.nodes()
-        }
-
-
-
-        starttime = time.time()
-        
-        if timestep == 0:     
-            print("Generating random walks")
-            #count_start = time.time()
-            walks_result = walks.generate_random_walks_directed_with_weights(weighted_graph, num_walks, walk_length=10)
-            precomputed_walks = walks_result.precomputed_walks
-            inverted_edges = walks_result.inverted_edges
-            inverted_nodes = walks_result.inverted_nodes
-            walk_ids = walks_result.walk_ids
-            random_walk_ids = walks_result.random_walk_ids
-
-
-            random_walks[timestep] = precomputed_walks
-            edge_to_walks[timestep] = inverted_edges
-            node_to_walks[timestep] = inverted_nodes
-            walks_to_ids[timestep] = walk_ids
-            startnode_to_ids[timestep] = random_walk_ids
-            precomputed_walks = {str(key): [list(map(str, inner_list)) for inner_list in value] for key, value in precomputed_walks.items()}
-
-            R = copy.deepcopy(precomputed_walks)
-
-
-
-
-        else:
-            print("Updating random walks")
-            previous_edge_walks = edge_to_walks[timestep - 1].copy()  # Get the walks from the previous timestep
-            previous_node_walks = node_to_walks[timestep - 1].copy()  # Get the walks from the previous timestep
-            previous_walk_ids = walks_to_ids[timestep - 1].copy()  # Get the walks from the previous timestep
-            previous_startnode_ids = startnode_to_ids[timestep - 1].copy()  # Get the walks from the previous timestep
-
-
-            updated_walks_result = walks.update_random_walks_directed_with_weights(weighted_graph,  previous_walk_ids, 
-                                                                                                           previous_edge_walks,previous_node_walks, previous_startnode_ids, 
-                                                                                                            changes_over_time[timestep - 1], num_walks, walk_length=10)
-            
-            
-            updated_walks = updated_walks_result.precomputed_walks
-            updated_edge_walks = updated_walks_result.inverted_edges
-            updated_node_walks = updated_walks_result.inverted_nodes
-            updated_walks_to_ids = updated_walks_result.walk_ids
-            updated_startnode_ids = updated_walks_result.random_walk_ids
-
-
-            update_start = time.time()
-
-            def update_dicts(timestep, updated_walks, updated_edge_walks, updated_node_walks, updated_walks_to_ids, updated_startnode_ids):
-                random_walks[timestep].update(updated_walks)
-                edge_to_walks[timestep].update(updated_edge_walks)
-                node_to_walks[timestep].update(updated_node_walks)
-                walks_to_ids[timestep].update(updated_walks_to_ids)
-                startnode_to_ids[timestep].update(updated_startnode_ids)
-
-            # Using ThreadPoolExecutor to parallelize the updates
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                executor.submit(update_dicts, timestep, updated_walks, updated_edge_walks, updated_node_walks, updated_walks_to_ids, updated_startnode_ids)
-
-            
-
-            updated_walks = {str(key): [list(map(str, inner_list)) for inner_list in value] for key, value in updated_walks.items()}
-            update_end = time.time() 
-            R = copy.deepcopy(updated_walks)
-
-            
-            print("Time taken to update dictionary: ", update_end - update_start)
-
-        # Generate the directed graph for the graph in the current timestep
-        directed_graph = {(node): list(dyngraph.neighbors(node)) for node in dyngraph.nodes()}
-        # Generate the PPR walks for the graph in the current timestep
+    for timestep in range(len(dynamic_graph)):
+        print(f"Timestep {timestep}")
         time_start = time.time()
-        walk = personalized_complete_pagerank_walk(w, L, epsilon, R, directed_graph)
+        dyngraph, changes, w, personalization_nodes = graph_changes_with_dummy_node(dynamic_graph, queries, timestep)
+        changes_over_time[timestep] = changes
 
+        n = len(dyngraph.nodes())
+        L = calculate_required_walk_length(c, epsilon, k, n)
+        logging.info(f"Required length of PPR walk {timestep}: {L}")
+
+        weighted_graph = preprocess_graph(dyngraph)
         time_end = time.time()
-        print(f"Time taken for PPR walk {timestep}: {time_end - time_start} seconds")
-   
-        ppr_walks[timestep] = walk
-        logging.info(f"Actual length of PPR walk {timestep}: {len(walk)}") 
-
-        print(len(walk), "Actual length of PPR walk")
-        count_start = time.time()
-        counts = Counter(walk)
-        counters[timestep] = counts
-        cumulative_counts += counts# Update cumulative counts
-        ppr_cumsum_walks[timestep] = cumulative_counts.copy() # Store cumulative counts in summaries
-        
-        string_counter = Counter({str(key): count for key, count in cumulative_counts.items()})# Convert keys to strings
-        filtered_counter = Counter({key: count for key, count in string_counter.items() if not key.startswith('123456789')})#filter out the dummy node
-
-        
-        # Normalize counts by dividing each by the sum of all counts
-        total_cumulative_walks = sum(filtered_counter.values())
-        if total_cumulative_walks > 0:
-           normalized_cumulative_counts = Counter({
-               key: value  / total_cumulative_walks for key, value in filtered_counter.items()
-           })
+        print(f"Time taken for preprocessing graph step: {time_end - time_start} seconds")
+        if timestep == 0:
+            print("Generating random walks...")
+            (precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids) = generate_random_walks(weighted_graph, num_walks)
+            random_walks[timestep], edge_to_walks[timestep], node_to_walks[timestep], walks_to_ids[timestep], startnode_to_ids[timestep] = (
+                precomputed_walks, inverted_edges, inverted_nodes, walk_ids, random_walk_ids
+            )
+            R = process_walk_results(precomputed_walks)
         else:
-            normalized_cumulative_counts = filtered_counter  # Handle edge case of 0 total walks
+            print("Updating random walks...")
+            previous_data = {
+                "edge_to_walks": edge_to_walks[timestep - 1],
+                "node_to_walks": node_to_walks[timestep - 1],
+                "walks_to_ids": walks_to_ids[timestep - 1],
+                "startnode_to_ids": startnode_to_ids[timestep - 1]
+            }
+            updated_walks_result = update_random_walks(timestep, weighted_graph, previous_data, changes, num_walks)
+            random_walks[timestep], edge_to_walks[timestep], node_to_walks[timestep], walks_to_ids[timestep], startnode_to_ids[timestep] = (
+                updated_walks_result.precomputed_walks,
+                updated_walks_result.inverted_edges,
+                updated_walks_result.inverted_nodes,
+                updated_walks_result.walk_ids,
+                updated_walks_result.random_walk_ids
+            )
+            R = process_walk_results(updated_walks_result.precomputed_walks)
 
-        top_k_cumulative = dict(normalized_cumulative_counts.most_common(k))
-        top_k_cumsum_walks[timestep] = top_k_cumulative
-        count_end = time.time()
-        print(f"Time taken to count: {count_end - count_start} seconds")
+        directed_graph = {node: list(dyngraph.neighbors(node)) for node in dyngraph.nodes()}
+        walk = compute_personalized_pagerank(w, L, epsilon, R, directed_graph)
+        ppr_walks[timestep] = walk
+        time_start = time.time()
+        top_k_cumsum_walks[timestep] = calculate_top_k_cumulative(walk, cumulative_counts, k)
+        time_end = time.time()
+        print(f"Time taken for top k: {time_end - time_start} seconds")
 
-
- 
-        
-    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks#, top_k_power_nx
-
+    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks
 
 
 def pagerank(dynamic_graph, queries, k):
