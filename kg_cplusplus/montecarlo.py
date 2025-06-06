@@ -1,4 +1,3 @@
-
 import itertools
 import argparse
 import random
@@ -11,9 +10,9 @@ from src.path import DBPEDIA_DATA_DIR, YAGO_DATA_DIR, METAQA_DATA_DIR, METAQA_DA
 import os
 from itertools import chain
 import networkx as nx
-import src.qadgosis.main  as qadgosis
+#import src.qadgosis.main_old  as qadgosis
 #import walks
-#import src.qadgosis.walks  as walks
+import src.qadgosis.main  as walks
 import random
 import numpy as np
 import scipy.sparse as sp
@@ -49,7 +48,11 @@ class SummaryGraph(KnowledgeGraph):
         """
         for e1 in self.top_k_nodes:
             if e1 not in self.parent().entity_id_:
+                #print(f"Node {e1} is not in the parent graph.")  # Log nodes not in the parent graph
                 continue  # Skip nodes that are not in the original KG
+            #else:
+             #   print(f"Node {e1} is in the parent graph.")  # Log nodes not in the parent graph
+
 
          #infer forward relations by checking all triples in KG
             if e1 in self.parent().triples_:
@@ -92,20 +95,20 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
 
     KG.load()
     directed_graph = nx.DiGraph()
-    #print(KG.__dict__)
+    #print(KG.entity_id_)
 
     edges = KG.triples()
     for s, p, o in edges:
         directed_graph.add_edge(s, o, predicate=p)
 
-        directed_graph[s][o]['weight'] = 0.5
+        directed_graph[s][o]['weight'] = 0.1
 
     dynagraph[i] = directed_graph
     user = 0
     KG.update_user(user)
     graphs[i] = KG
 
-    topic_mids = random.sample(list(KG.triples_.keys()), k=2)
+    topic_mids = random.sample(list(KG.triples_.keys()), k=9)
     query_log = query_log_by_mids(
             KG, topic_mids, 200, topic_dist=np.ones(len(topic_mids))/len(topic_mids),
             shuffle=False,
@@ -120,12 +123,43 @@ for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
 K=100
 
 
-#c_dynagraph = [elm for elm in dynagraph.values()]
+converted_dynagraph = []
+for timestep, graph in dynagraph.items():
+    converted_graph = {}
+    for node in graph.nodes:
+        neighbors = {}
+        for neighbor in graph[node]:
+            # Ensure neighbors exist and weights are valid
+            if graph[node][neighbor]:
+                neighbors[int(neighbor)] = float(graph[node][neighbor].get("weight", 0.1))  # Default weight is 0.5
+        converted_graph[int(node)] = neighbors
+    converted_dynagraph.append(converted_graph)
 
-changes_over_time, random_walks, _, _, top_k_cumsum_walks= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
-#top_k_power_nx = qadgosis.pagerank(dynamic_graph = dynagraph, queries = queries_, k=K)
-#qadgosis.write_to_file(random_walks, "random_walks_c++") 
+#print((converted_dynagraph[0]))
 
+# Convert queries to the expected format
+converted_queries = {}
+for timestep, query_list in queries_.items():
+    converted_queries[int(timestep)] = {i: int(query) for i, query in enumerate(query_list)}
+
+
+print(len(converted_queries[0]), "queries", len(converted_dynagraph[0]))
+
+results = walks.generate_top_k_summary(
+    num_timesteps=len(converted_dynagraph),
+    n_nodes=len(converted_dynagraph[0]),
+    m_edges=5,  # Adjust as needed
+    num_queries=len(converted_queries[0]),
+    num_walks=10,  # Reduce number of walks for testing
+    dynamic_graph=converted_dynagraph,
+    queries=converted_queries,
+    c=2,
+    epsilon=0.2,
+    k=K
+)
+
+    # Access top_k_cumsum_walks from the results dictionary
+top_k_cumsum_walks = results["top_k_cumsum_walks"]
 
 
 #if qadgosis.check_summary(S, KG):
@@ -135,6 +169,8 @@ def process_summary_graph(top_k_nodes_dict, graphs, label):
     for key in top_k_nodes_dict.keys() & graphs.keys():
         KG = graphs[key]
         top_k_nodes = top_k_nodes_dict[key]
+        top_k_nodes = {str(node): value for node, value in top_k_nodes_dict[key].items()}
+        #print(key, top_k_nodes.keys())
 
     # Create a summary graph
         time_start = time()
@@ -175,8 +211,9 @@ def process_summary_graph(top_k_nodes_dict, graphs, label):
     return triples_no
 
 # Process both top_k_cumsum_walks and top_k_power_nx
+for i, j in top_k_cumsum_walks.items():
+    print(f"Top 10 nodes for timestep {i}: {len(j.values())}")
 triples_no_mc = process_summary_graph(top_k_cumsum_walks, graphs, "Cumsum Walks")
-#triples_no_pr = process_summary_graph(top_k_power_nx, graphs, "Pagerank")
 
 
 

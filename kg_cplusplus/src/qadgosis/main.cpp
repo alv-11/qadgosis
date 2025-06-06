@@ -1,4 +1,3 @@
-
 #include "walks.cpp"
 #include "mainwrap.h"
 
@@ -80,7 +79,8 @@ GraphChangesDummyResult graph_changes_with_dummy_node(const vector<Graph_> &dyna
     auto personalization = res1.personalization;
     
     Graph_ snapshot_t;
-    if(timestep + 1 < dynamic_graph.size()){
+    // Cast dynamic_graph.size() to int to avoid signed/unsigned comparison warnings
+    if(timestep + 1 < static_cast<int>(dynamic_graph.size())){
         snapshot_t = personalized_graph(dynamic_graph[timestep+1], queries.at(timestep+1), timestep+1).snapshot;
     } else {
         snapshot_t = snapshot_s;
@@ -137,97 +137,6 @@ GraphChangesDummyResult graph_changes_with_dummy_node(const vector<Graph_> &dyna
     return {snapshot_s, changes, dummy_node, personalization};
 }
 
-// Write data (here provided as a JSON–like string) to a file.
-void write_to_file(const string &data, 
-                   const string &prefix = "data", 
-                   const string &file_extension = "json",
-                   const string &output_directory = "../output/") {
-    string file_name = output_directory + prefix + "." + file_extension;
-    ofstream outfile(file_name);
-    if(outfile.is_open()){
-        outfile << data;
-        outfile.close();
-        cout << "Data saved to " << file_name << endl;
-    } else {
-        cout << "Error opening file " << file_name << endl;
-    }
-}
-
-// --- Synthetic graph & query generation ---
-
-// Dummy synthetic_graph: generate a dynamic graph with num_timesteps snapshots,
-// each with n_nodes nodes and m_edges randomly–generated edges.
-vector<Graph_> synthetic_graph(int num_timesteps, int n_nodes, int m_edges) {
-    vector<Graph_> dynamic_graph;
-    random_device rd;
-    mt19937 gen(rd());
-    uniform_int_distribution<> dis(0, n_nodes - 1);
-    
-    for (int t = 0; t < num_timesteps; t++) {
-        Graph_ g;
-        // Create nodes.
-        for (int i = 0; i < n_nodes; i++) {
-            g[i] = unordered_map<int, double>(); // empty neighbor list
-        }
-        // Add m_edges random edges.
-        for (int i = 0; i < m_edges; i++) {
-            int u = dis(gen);
-            int v = dis(gen);
-            if(u == v) continue; // avoid self-loops
-            g[u][v] = 0.01;
-        }
-        dynamic_graph.push_back(g);
-    }
-    return dynamic_graph;
-}
-
-// Dummy generate_query: pick a random node from the graph's keys.
-int generate_query(const Graph_ &graph, int path_len, int qid, int constraint_index = -1) {
-    if (graph.empty())
-        return -1;
-    vector<int> nodes;
-    for (const auto &p : graph)
-        nodes.push_back(p.first);
-    random_device rd;
-    mt19937 gen(rd());
-    uniform_int_distribution<> dis(0, nodes.size()-1);
-    return nodes[dis(gen)];
-}
-
-// Build queries for all timesteps. Each timestep gets a mapping from query index to node id.
-// (In the Python code the “fixed” queries are slightly changed per timestep.)
-unordered_map<int, unordered_map<int,int>> graph_and_queries(int num_timesteps, int n_nodes, int m_edges, int num_queries) {
-    unordered_map<int, unordered_map<int,int>> queries;
-    vector<Graph_> dynamic_graph = synthetic_graph(num_timesteps, n_nodes, m_edges);
-    
-    // Using the first snapshot as a base.
-    Graph_ G_t = dynamic_graph[0];
-    Graph_ graph_dict = G_t;
-    
-    unordered_map<int,int> timestep_query;
-    for (int i = 0; i < num_queries; i++){
-        int query = generate_query(graph_dict, 2, i, -1);
-        timestep_query[i] = query;
-    }
-    
-    // For each timestep, copy the fixed queries and then replace the first three entries.
-    for (int t = 0; t < dynamic_graph.size(); t++) {
-        unordered_map<int,int> new_query = timestep_query; // fixed queries
-        unordered_set<int> current_query_values;
-        for (const auto &p : timestep_query)
-            current_query_values.insert(p.second);
-        int replace_count = 0;
-        while(replace_count < 3) {
-            int candidate = generate_query(graph_dict, 2, replace_count, -1);
-            if(current_query_values.find(candidate) == current_query_values.end()){
-                new_query[replace_count] = candidate;
-                replace_count++;
-            }
-        }
-        queries[t] = new_query;
-    }
-    return queries;
-}
 
 // --- Walks, PageRank, and Aggregation ---
 
@@ -270,6 +179,56 @@ RandomWalkResult generate_random_walks(const Graph_ &weighted_graph, int num_wal
     }
     return result;
 }
+RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length = 10) {
+    RandomWalkResult result;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::vector<int> nodes;
+    for (const auto& p : weighted_graph)
+        nodes.push_back(p.first);  // Only consider nodes with outgoing edges
+
+    for (int i = 0; i < num_walks; i++) {
+        std::vector<int> walk;
+
+        // Pick a random starting node
+        std::uniform_int_distribution<> dis(0, nodes.size() - 1);
+        int current = nodes[dis(gen)];
+        walk.push_back(current);
+
+        for (int j = 1; j < walk_length; j++) {
+            const auto it = weighted_graph.find(current);
+            if (it == weighted_graph.end() || it->second.empty())
+                break;
+
+            const auto& neighbors_map = it->second;
+
+            std::vector<int> neighbors;
+            std::vector<double> weights;
+            for (const auto& [neighbor, weight] : neighbors_map) {
+                neighbors.push_back(neighbor);
+                weights.push_back(weight);
+            }
+
+            double sum_weights = std::accumulate(weights.begin(), weights.end(), 0.0);
+            if (sum_weights > 0.0) {
+                for (auto& w : weights)
+                    w /= sum_weights;  // Normalize to probabilities
+            } else {
+                weights.assign(neighbors.size(), 1.0 / neighbors.size()); // Uniform fallback
+            }
+
+            std::discrete_distribution<> weight_dist(weights.begin(), weights.end());
+            current = neighbors[weight_dist(gen)];
+            walk.push_back(current);
+        }
+
+        result.precomputed_walks[i].push_back(walk);
+    }
+
+    return result;
+}
+
 
 // Dummy function to update random walks. Here we simply re‐generate them.
 RandomWalkResult update_random_walks(int timestep, const Graph_ &weighted_graph, 
@@ -277,6 +236,94 @@ RandomWalkResult update_random_walks(int timestep, const Graph_ &weighted_graph,
                                      const GraphChanges &changes, int num_walks) {
     return generate_random_walks(weighted_graph, num_walks);
 }
+
+RandomWalkResult update_random_walks_directed_with_weights(
+    const Graph_& graph,
+    std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
+    const GraphChanges& changes,
+    int num_walks,
+    int walk_length
+) {
+    RandomWalkResult result;
+
+    using RNG = std::mt19937;
+    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+    RNG rng(seed);
+
+    // Build neighbor and weight lookup tables
+    std::unordered_map<int, std::vector<int>> neighbors_dict;
+    std::unordered_map<int, std::vector<double>> weights_dict;
+
+    for (const auto& [node, neighbors] : graph) {
+        for (const auto& [nbr, weight] : neighbors) {
+            neighbors_dict[node].push_back(nbr);
+            weights_dict[node].push_back(weight);
+        }
+    }
+
+    // Handle removed nodes
+    for (int node : changes.nodes_removed) {
+        precomputed_walks.erase(node);  // Remove entire entry
+    }
+
+    // Handle added nodes (generate fresh walks)
+    for (int node : changes.nodes_added) {
+        std::vector<std::vector<int>> walks;
+        for (int i = 0; i < num_walks; ++i) {
+            std::vector<int> walk = {node};
+            int current = node;
+
+            for (int j = 0; j < walk_length; ++j) {
+                if (neighbors_dict.find(current) != neighbors_dict.end() && !neighbors_dict[current].empty()) {
+                    auto& neighbors = neighbors_dict[current];
+                    auto& weights = weights_dict[current];
+                    std::discrete_distribution<int> dist(weights.begin(), weights.end());
+                    current = neighbors[dist(rng)];
+                    walk.push_back(current);
+                } else {
+                    break;
+                }
+            }
+
+            walks.push_back(std::move(walk));
+        }
+        precomputed_walks[node] = std::move(walks);
+    }
+
+    // Handle edge removals — truncate any walks that pass through a removed edge
+    for (auto& [node, walks] : precomputed_walks) {
+        for (auto& walk : walks) {
+            for (size_t i = 0; i + 1 < walk.size(); ++i) {
+                if (changes.edges_removed.count({walk[i], walk[i + 1]})) {
+                    walk.resize(i + 1);  // Truncate at the edge
+                    break;
+                }
+            }
+        }
+    }
+
+    // Extend all truncated or too-short walks
+    for (auto& [node, walks] : precomputed_walks) {
+        for (auto& walk : walks) {
+            while (walk.size() < static_cast<size_t>(walk_length + 1)) {
+                int last = walk.back();
+                if (neighbors_dict.find(last) != neighbors_dict.end() && !neighbors_dict[last].empty()) {
+                    auto& neighbors = neighbors_dict[last];
+                    auto& weights = weights_dict[last];
+                    std::discrete_distribution<int> dist(weights.begin(), weights.end());
+                    int next = neighbors[dist(rng)];
+                    walk.push_back(next);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    result.precomputed_walks = precomputed_walks;
+    return result;
+}
+
 
 // Process the raw integer–based walks to string form.
 unordered_map<int, vector<vector<string>>> process_walk_results(const unordered_map<int, vector<vector<int>>> &precomputed_walks) {
@@ -307,18 +354,22 @@ vector<int> compute_personalized_pagerank(int w, int L, double epsilon,
     uniform_real_distribution<> dis(0.0, 1.0);
     
     walk.push_back(current);
-    for (int i = 1; i < L; i++){
+    for (int i = 1; i < L; i++) {
         if (dis(gen) < epsilon) {
             current = w;
         } else {
-            if (directed_graph.find(current) != directed_graph.end() && !directed_graph.at(current).empty()){
+            if (directed_graph.find(current) != directed_graph.end() && !directed_graph.at(current).empty()) {
                 const vector<int>& neighbors = directed_graph.at(current);
-                uniform_int_distribution<> dis2(0, neighbors.size()-1);
+                uniform_int_distribution<> dis2(0, neighbors.size() - 1);
                 current = neighbors[dis2(gen)];
             }
         }
         walk.push_back(current);
     }
+    
+    // Print the length of the walk
+    cout << "Length of walk: " << walk.size() << endl;
+
     return walk;
 }
 
@@ -368,8 +419,9 @@ TopKSummary generate_top_k_summary(int num_timesteps, int n_nodes, int m_edges, 
     //vector<Graph_> dynamic_graph = synthetic_graph(num_timesteps, n_nodes, m_edges);
     //auto queries = graph_and_queries(num_timesteps, n_nodes, m_edges, num_queries);
     
-    for (int t = 0; t < num_timesteps; t++){
-        cout << "Timestep " << t << endl;
+    for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {  // Cast dynamic_graph.size() to int
+        cout << "Processing timestep " << t << endl;
+        auto total_start = chrono::high_resolution_clock::now();
         auto result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
         summary.changes_over_time[t] = result.changes;
         
@@ -390,11 +442,12 @@ TopKSummary generate_top_k_summary(int num_timesteps, int n_nodes, int m_edges, 
         RandomWalkResult R;
         if (t == 0) {
             cout << "Generating random walks..." << endl;
-            R = generate_random_walks(weighted_graph, num_walks);
+            //R = generate_random_walks(weighted_graph, num_walks);
+            R = generate_random_walks_directed_weighted(weighted_graph, num_walks);
             summary.random_walks[t] = R;
         } else {
             cout << "Updating random walks..." << endl;
-            R = update_random_walks(t, weighted_graph, summary.random_walks[t-1], summary.changes_over_time[t], num_walks);
+            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, 10);
             summary.random_walks[t] = R;
         }
         
@@ -421,6 +474,10 @@ TopKSummary generate_top_k_summary(int num_timesteps, int n_nodes, int m_edges, 
         auto time_end = chrono::high_resolution_clock::now();
         chrono::duration<double> elapsed_topk = time_end - time_start;
         cout << "Time taken for top k: " << elapsed_topk.count() << " seconds" << endl;
+
+        auto total_end = chrono::high_resolution_clock::now();
+        chrono::duration<double> total_elapsed = total_end - total_start;
+        cout << "Total time taken for timestep " << t << ": " << total_elapsed.count() << " seconds" << endl;
     }
     return summary;
 }
@@ -456,94 +513,6 @@ unordered_map<int, unordered_map<int, double>> pagerank(const vector<Graph_> &dy
     return top_k_power;
 }
 
-// --- Main ---
-
-/*int main() {
-    // Parameters: constant c for the PPR walk, teleport probability epsilon, 
-    // number of nodes, and a vector for different numbers of random walks.
-    double c = 2.0;
-    double epsilon = 0.20;
-    int nodes = 10000;
-    vector<int> num_walks_list = {10, 100};
-    int k = 50;
-    int num_timesteps = 5;
-    int num_queries = 20;
-    
-    for (int per : num_walks_list) {
-        cout << "\nRunning for " << per << " walks" << endl;
-        // Create an output directory string (assume the directory exists or is managed externally)
-        string output_directory = "./output/nodes" + to_string(nodes) + "_" + to_string(per) + "/";
-        cout << "Logging to: " << output_directory << "ndcg_" << nodes << "nodes_" << per << "runtime.log" << endl;
-        
-        //TopKSummary summary = generate_top_k_summary(num_timesteps, nodes, 5, num_queries, per, c, epsilon, k);
-        // For the pagerank part, re–generate a synthetic graph and queries.
-        auto dyn_graph = synthetic_graph(num_timesteps, nodes, 5);
-        auto queries = graph_and_queries(num_timesteps, nodes, 5, num_queries);
-        auto top_k_power_nx = pagerank(dyn_graph, queries, k);
-        
-        // Compute dummy ndcg and precision metrics.
-        unordered_map<int, double> ndcg_scores;
-        unordered_map<int, double> precision_scores;
-        for (int t = 0; t < num_timesteps; t++){
-            // Here we simply compute the intersection size between the two sets.
-            unordered_set<int> pr_nodes, rw_nodes;
-            for (auto &p : top_k_power_nx[t])
-                pr_nodes.insert(p.first);
-            for (auto &p : summary.top_k_cumsum_walks[t])
-                rw_nodes.insert(p.first);
-            int intersection = 0;
-            for (int node : pr_nodes) {
-                if(rw_nodes.find(node) != rw_nodes.end())
-                    intersection++;
-            }
-            double prec = pr_nodes.empty() ? 0.0 : (double)intersection / pr_nodes.size();
-            // For demonstration, we set ndcg equal to the calculated precision.
-            ndcg_scores[t] = prec;
-            precision_scores[t] = prec;
-        }
-        // Print the scores.
-        cout << "\nTimestep, ndcg, precision" << endl;
-        for (int t = 0; t < num_timesteps; t++){
-            cout << t << ", " << ndcg_scores[t] << ", " << precision_scores[t] << endl;
-        }
-        
-        // Write the scores to a CSV file.
-        string file_name = output_directory + "scores_" + to_string(nodes) + "nodes_" + to_string(per) + "walks.csv";
-        ofstream csvfile(file_name);
-        if(csvfile.is_open()){
-            csvfile << "Timestep,ndcg,precision\n";
-            for (int t = 0; t < num_timesteps; t++){
-                csvfile << t << "," << ndcg_scores[t] << "," << precision_scores[t] << "\n";
-            }
-            csvfile.close();
-            cout << "Scores saved to " << file_name << endl;
-        } else {
-            cout << "Couldn't write scores to file." << endl;
-        }
-        
-        // For demonstration, we write out the random walks in a simplified JSON–like format.
-        stringstream ss;
-        ss << "{\n";
-        for (auto &rw : summary.random_walks) {
-            ss << "  \"" << rw.first << "\": {\n";
-            for (auto &entry : rw.second.precomputed_walks) {
-                ss << "    \"" << entry.first << "\": [";
-                for (size_t i = 0; i < entry.second.size(); i++){
-                    ss << "[";
-                    for (size_t j = 0; j < entry.second[i].size(); j++){
-                        ss << entry.second[i][j] << (j == entry.second[i].size()-1 ? "" : ", ");
-                    }
-                    ss << "]" << (i == entry.second.size()-1 ? "" : ", ");
-                }
-                ss << "],\n";
-            }
-            ss << "  },\n";
-        }
-        ss << "}\n";
-        write_to_file(ss.str(), "random_walks");
-    }
-    return 0;
-}*/
 
 
 // Wrap generate_top_k_summary so that it can be called from Python.
@@ -602,7 +571,7 @@ result["top_k_cumsum_walks"] = top_k_cumsum_walks;
 return result;
 }
 
-PYBIND11_MODULE(walks, m) {
+PYBIND11_MODULE(main, m) {
 m.doc() = "Python bindings for generate_top_k_summary function using the C++ walks library";
 m.def("generate_top_k_summary", &wrap_generate_top_k_summary,
 "Generate a top-k summary from dynamic graph updates.",
