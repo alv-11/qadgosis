@@ -179,6 +179,7 @@ RandomWalkResult generate_random_walks(const Graph_ &weighted_graph, int num_wal
     }
     return result;
 }
+
 RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length = 10) {
     RandomWalkResult result;
     std::random_device rd;
@@ -399,87 +400,163 @@ unordered_map<int, double> calculate_top_k_cumulative(const vector<int> &walk,
     return top_k;
 }
 
-// Structure to hold the overall summary information.
-/*struct TopKSummary {
-    unordered_map<int, GraphChanges> changes_over_time;
-    unordered_map<int, RandomWalkResult> random_walks;
-    unordered_map<int, vector<int>> ppr_walks;
-    unordered_map<int, unordered_map<int, double>> top_k_cumsum_walks;
-};*/
+// Function to update cumulative counts and calculate the top-k nodes with weights and exponential decay.
+std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights(
+    const std::vector<int>& walk,
+    std::unordered_map<int, int>& cumulative_counts,
+    int k,
+    int timestep,
+    std::unordered_map<int, std::unordered_map<int, int>>& counters,
+    double decay_rate = 0.38,
+    int window_size = 5 
+) {
+    // Update the current timestep's counts
+    for (int node : walk) {
+        counters[timestep][node]++;
+    }
 
-// The main “generate_top_k_summary” function iterates over timesteps,
-// updating random walks, computing a personalized random walk (as a PPR surrogate),
-// and aggregating counts to produce top–k summary data.
-TopKSummary generate_top_k_summary(int num_timesteps, int n_nodes, int m_edges, int num_queries, int num_walks,
-    vector<Graph_>& dynamic_graph, unordered_map<int, unordered_map<int,int>>& queries, double c, double epsilon, int k) {
-    
+    // Determine relevant timesteps for exponential decay
+    std::vector<int> keys;
+    for (const auto& entry : counters) {
+        keys.push_back(entry.first);
+    }
+    std::sort(keys.begin(), keys.end());
+    int latest_timestep = keys.back();
+    int start_index = std::max(0, static_cast<int>(keys.size()) - window_size); // Use num_timesteps explicitly
+    std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
+
+    // Apply exponential decay to counts
+    std::unordered_map<int, int> decayed_counts;
+    std::unordered_map<int, double> individual_weights;
+    for (int j : relevant_timesteps) {
+        double weight = std::pow(decay_rate, latest_timestep - j);
+        individual_weights[j] = weight;
+
+        for (const auto& entry : counters[j]) {
+            int node = entry.first;
+            int count = entry.second;
+            decayed_counts[node] += static_cast<int>(count * weight);
+        }
+    }
+
+    // Update cumulative counts
+    for (const auto& entry : decayed_counts) {
+        cumulative_counts[entry.first] += entry.second;
+    }
+
+    // Normalize counts
+    int total_cumulative_walks = std::accumulate(
+        cumulative_counts.begin(),
+        cumulative_counts.end(),
+        0,
+        [](int sum, const std::pair<int, int>& p) { return sum + p.second; }
+    );
+
+    std::vector<std::pair<int, double>> normalized_counts;
+    for (const auto& entry : cumulative_counts) {
+        double normalized = (total_cumulative_walks > 0) ? static_cast<double>(entry.second) / total_cumulative_walks : 0.0;
+        normalized_counts.emplace_back(entry.first, normalized);
+    }
+
+    // Sort normalized counts and select top-k nodes
+    std::sort(normalized_counts.begin(), normalized_counts.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+    });
+
+    std::unordered_map<int, double> top_k_cumulative;
+    for (int i = 0; i < std::min(k, static_cast<int>(normalized_counts.size())); i++) {
+        top_k_cumulative[normalized_counts[i].first] = normalized_counts[i].second;
+    }
+
+    return {top_k_cumulative, individual_weights};
+}
+
+
+// Modify the function to return the new structure
+TopKSummaryWithWeights generate_top_k_summary(
+    int num_timesteps,
+    int num_walks,
+    std::vector<Graph_>& dynamic_graph,
+    std::unordered_map<int, std::unordered_map<int, int>>& queries,
+    double c,
+    double epsilon,
+    int k,
+    double decay_rate
+) {
     TopKSummary summary;
-    unordered_map<int,int> cumCounts;  // cumulative counts for nodes
-    
-    //vector<Graph_> dynamic_graph = synthetic_graph(num_timesteps, n_nodes, m_edges);
-    //auto queries = graph_and_queries(num_timesteps, n_nodes, m_edges, num_queries);
-    
-    for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {  // Cast dynamic_graph.size() to int
+    std::unordered_map<int, std::unordered_map<int, double>> weights; // Declare weights
+    std::unordered_map<int, double> runtime_per_timestep; // Dictionary to store runtimes
+
+    std::unordered_map<int, int> cumCounts;  // cumulative counts for nodes
+    std::unordered_map<int, std::unordered_map<int, int>> counters;  // counters for each timestep
+
+    for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
         cout << "Processing timestep " << t << endl;
         auto total_start = chrono::high_resolution_clock::now();
-        auto result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
-        summary.changes_over_time[t] = result.changes;
-        
-        // Count all nodes in the snapshot.
+        auto graph_changes_result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
+        summary.changes_over_time[t] = graph_changes_result.changes;
+
+        // Count all nodes in the snapshot
         unordered_set<int> nodes_set;
-        for (const auto &p : result.snapshot) {
+        for (const auto& p : graph_changes_result.snapshot) {
             nodes_set.insert(p.first);
-            for (const auto &q : p.second)
+            for (const auto& q : p.second)
                 nodes_set.insert(q.first);
         }
         int n = nodes_set.size();
         int L = calculate_required_walk_length(c, epsilon, k, n);
         cout << "Required length of PPR walk " << t << ": " << L << endl;
-        
-        // Preprocess (we already have weighted edges).
-        Graph_ weighted_graph = result.snapshot;
-        
+
+        // Preprocess (we already have weighted edges)
+        Graph_ weighted_graph = graph_changes_result.snapshot;
+
         RandomWalkResult R;
         if (t == 0) {
-            cout << "Generating random walks..." << endl;
-            //R = generate_random_walks(weighted_graph, num_walks);
             R = generate_random_walks_directed_weighted(weighted_graph, num_walks);
             summary.random_walks[t] = R;
         } else {
-            cout << "Updating random walks..." << endl;
             R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, 10);
             summary.random_walks[t] = R;
         }
-        
-        // Create a directed graph for the walk process.
+
+        // Create a directed graph for the walk process
         DirectedGraph directed_graph;
-        for (const auto &p : weighted_graph) {
+        for (const auto& p : weighted_graph) {
             int u = p.first;
-            for (const auto &q : p.second)
+            for (const auto& q : p.second)
                 directed_graph[u].push_back(q.first);
         }
-        
-        // Process the random walk results.
+
+        // Process the random walk results
         auto processed_R = process_walk_results(R.precomputed_walks);
         auto start = chrono::high_resolution_clock::now();
-        vector<int> walk = compute_personalized_pagerank(result.dummy_node, L, epsilon, processed_R, directed_graph);
+        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, processed_R, directed_graph);
         auto end = chrono::high_resolution_clock::now();
         chrono::duration<double> elapsed = end - start;
-        cout << "Time taken for PPR walk: " << elapsed.count() << " seconds" << endl;
-        
+
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
-        auto top_k = calculate_top_k_cumulative(walk, cumCounts, k);
+
+        // Calculate top-k cumulative with weights
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters, decay_rate, num_timesteps);
+        auto top_k = top_k_result.first;
+        weights[t] = top_k_result.second; // Store weights for the current timestep
+
         summary.top_k_cumsum_walks[t] = top_k;
+
         auto time_end = chrono::high_resolution_clock::now();
         chrono::duration<double> elapsed_topk = time_end - time_start;
-        cout << "Time taken for top k: " << elapsed_topk.count() << " seconds" << endl;
 
         auto total_end = chrono::high_resolution_clock::now();
         chrono::duration<double> total_elapsed = total_end - total_start;
         cout << "Total time taken for timestep " << t << ": " << total_elapsed.count() << " seconds" << endl;
+
+        // Store runtime in dictionary
+        runtime_per_timestep[t] = total_elapsed.count();
     }
-    return summary;
+
+    // Return both summary, weights, and runtime dictionary
+    return {summary, weights, runtime_per_timestep}; // Updated return statement
 }
 
 // Dummy pagerank: for each snapshot, assign a random score to nodes (ignoring the dummy nodes)
@@ -517,20 +594,30 @@ unordered_map<int, unordered_map<int, double>> pagerank(const vector<Graph_> &dy
 
 // Wrap generate_top_k_summary so that it can be called from Python.
 py::dict wrap_generate_top_k_summary(int num_timesteps,
-    int n_nodes,
-    int m_edges,
-    int num_queries,
     int num_walks,
     vector<Graph_>& dynamic_graph,
     unordered_map<int, unordered_map<int,int>>& queries,
     double c,
     double epsilon,
-    int k) {
+    int k,
+    double decay_rate) {
 // Call the original C++ function; internally it calls the C++ walks library.
-TopKSummary summary = generate_top_k_summary(num_timesteps, n_nodes, m_edges, num_queries, num_walks, dynamic_graph, queries, c, epsilon, k);
+TopKSummaryWithWeights result = generate_top_k_summary(num_timesteps,  num_walks, dynamic_graph, queries, c, epsilon, k, decay_rate);
+
+// Access the summary, weights, and runtime from the result
+TopKSummary summary = result.summary;
+std::unordered_map<int, std::unordered_map<int, double>> weights = result.weights;
+std::unordered_map<int, double> runtime_per_timestep = result.runtime_per_timestep;
 
 // Prepare a Python dictionary to hold the results.
-py::dict result;
+py::dict result_dict;
+
+// Convert runtime_per_timestep to a Python dict
+py::dict runtime_dict;
+for (const auto& entry : runtime_per_timestep) {
+    runtime_dict[py::int_(entry.first)] = entry.second;
+}
+result_dict["runtime_per_timestep"] = runtime_dict;
 
 // Convert changes_over_time (unordered_map<int, GraphChanges>) to a Python dict.
 py::dict changes_over_time;
@@ -548,14 +635,14 @@ ch["edges_added"] = edges_added;
 ch["edges_removed"] = edges_removed;
 changes_over_time[py::int_(entry.first)] = ch;
 }
-result["changes_over_time"] = changes_over_time;
+result_dict["changes_over_time"] = changes_over_time;
 
 // Convert ppr_walks (unordered_map<int, vector<int>>)
 py::dict ppr_walks;
 for (const auto &item : summary.ppr_walks) {
 ppr_walks[py::int_(item.first)] = item.second;
 }
-result["ppr_walks"] = ppr_walks;
+result_dict["ppr_walks"] = ppr_walks;
 
 // Convert top_k_cumsum_walks (unordered_map<int, unordered_map<int, double>>)
 py::dict top_k_cumsum_walks;
@@ -566,16 +653,28 @@ inner[py::int_(p.first)] = p.second;
 }
 top_k_cumsum_walks[py::int_(entry.first)] = inner;
 }
-result["top_k_cumsum_walks"] = top_k_cumsum_walks;
+result_dict["top_k_cumsum_walks"] = top_k_cumsum_walks;
 
-return result;
+// Convert weights (unordered_map<int, unordered_map<int, double>>)
+py::dict all_weights;
+for (const auto& entry : weights) {
+py::dict inner;
+for (const auto& p : entry.second) {
+inner[py::int_(p.first)] = p.second;
+}
+all_weights[py::int_(entry.first)] = inner;
+}
+result_dict["all_weights"] = all_weights;
+
+return result_dict;
 }
 
 PYBIND11_MODULE(main, m) {
 m.doc() = "Python bindings for generate_top_k_summary function using the C++ walks library";
 m.def("generate_top_k_summary", &wrap_generate_top_k_summary,
 "Generate a top-k summary from dynamic graph updates.",
-py::arg("num_timesteps"), py::arg("n_nodes"), py::arg("m_edges"),
-py::arg("num_queries"), py::arg("num_walks"), py::arg("dynamic_graph"), py::arg("queries"), 
-py::arg("c"), py::arg("epsilon"), py::arg("k"));
+py::arg("num_timesteps"), 
+py::arg("num_walks"), py::arg("dynamic_graph"), py::arg("queries"), 
+py::arg("c"), py::arg("epsilon"), py::arg("k"), py::arg("decay_rate"));
 }
+

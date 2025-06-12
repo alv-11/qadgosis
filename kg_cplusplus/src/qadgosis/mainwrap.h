@@ -25,18 +25,23 @@ struct TopKSummary {
     std::unordered_map<int, std::unordered_map<int, double>> top_k_cumsum_walks;
 };
 
+// Structure to hold both the summary, weights, and runtime.
+struct TopKSummaryWithWeights {
+    TopKSummary summary;
+    std::unordered_map<int, std::unordered_map<int, double>> weights;
+    std::unordered_map<int, double> runtime_per_timestep; // Add runtime_per_timestep
+};
+
 // Function declarations.
-TopKSummary generate_top_k_summary(
+TopKSummaryWithWeights generate_top_k_summary(
     int num_timesteps,
-    int n_nodes,
-    int m_edges,
-    int num_queries,
     int num_walks,
     std::vector<std::unordered_map<int, std::unordered_map<int, double>>>& dynamic_graph,
     std::unordered_map<int, std::unordered_map<int, int>>& queries,
     double c,
     double epsilon,
-    int k
+    int k,
+    double decay_rate 
 );
 
 std::vector<int> compute_personalized_pagerank(

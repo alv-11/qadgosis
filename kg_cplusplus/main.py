@@ -10,7 +10,6 @@ from src.path import DBPEDIA_DATA_DIR, YAGO_DATA_DIR, METAQA_DATA_DIR, METAQA_DA
 import os
 from itertools import chain
 import networkx as nx
-import walks
 
 
 
@@ -32,7 +31,7 @@ from src.metrics import total_query_log_metrics, average_query_log_metrics
 KG_MAPPING = {
     'YAGO': YAGO(rdf_gz='yagoFacts.gz', query_dir='final/', mid_dir='by-mid/'),
     'Freebase': Freebase(query_dir='queries/final/'),
-    'DBPedia': '../PKG_EXP/DBpedia/dbpedia_subgraphs', #DBPedia(),
+    'DBPedia': '../PKG_EXP/DBpedia/dbpedia_subgraphs_int', #DBPedia(),
     'MetaQA': MetaQA(ablation=0),
 }
 
@@ -47,7 +46,7 @@ METHODS = {
 
 
 
-def answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=0.5, query_num_per_test=1):
+def answer_queries_in_log(KG, K, i, training_set, test_set, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=0.5, query_num_per_test=1):
     """
     :param KG: KnowledgeGraph
     :param K: summary constraint
@@ -64,47 +63,44 @@ def answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc
                 update_time_list = []
                 acc_list = []
 
-                if i==0 or (i%1 == 0):
+
+                if i==0 :
                     if DETAILED_LOGGING:
                         logging.info('Summarizing for query: {}'.format(i))
                         print("Summarizing for query: ", i)
 
                     t0 = time()
-                    keys = list(logs.keys())
-                    target_index = keys.index(i)
-                    merged_logs = [logs[key] for key in keys[:target_index + 1]]
-                    merged_logs = list(chain.from_iterable(value if isinstance(value, list) else [value] for value in merged_logs))
 
-
-                    S = summary_method(KG, K, logs[i]) # call the object as a function
-                    #print((S.__dict__.keys()))
-                    #print(S.__dict__['number_of_triples_'])
+                    S = summary_method(KG, K, training_set[i]) 
 
                     runtime = time() - t0
+                    print("runtime: ", runtime)
                     update_time_list.append(runtime)
 
 
 
-                    total_F1, total_precision, total_recall = total_query_log_metrics(S, merged_logs)
+                    total_F1, total_precision, total_recall = total_query_log_metrics(S, test_set[i])
                     if DETAILED_LOGGING:
                         logging.info('\t  Total F1/precision/recall')
                         logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
                             total_F1, total_precision, total_recall))
 
-                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, merged_logs)
+                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_set[i])
                     if DETAILED_LOGGING:
                         logging.info('\t  Average F1/precision/recall')
                         logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
                             avg_F1, avg_precision, avg_recall))
                     print(total_F1, total_precision, total_recall)
                     print(avg_F1, avg_precision, avg_recall)
+
                 
-                elif (i % 1 == 0):
+                else:
                     if DETAILED_LOGGING:
                         logging.info('Re-summarizing for query: {}'.format(i))
                         print("Re-summarizing for query: ", i)
 
                     t0 = time()
+                    
 
 
                     def flatten_list(nested_list):
@@ -116,32 +112,28 @@ def answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc
                                 yield item
                    
 
-
-                    keys = list(logs.keys())
+                    keys = list(training_set.keys())
                     target_index = keys.index(i)
-                    merged_logs = [logs[key] for key in keys[:target_index + 1]]
+                    merged_logs = [training_set[key] for key in keys[:target_index + 1]]
                     merged_logs = list(flatten_list(merged_logs))
-                    #print("Before Flattening:", merged_logs)
-                    #merged_logs = list(chain.from_iterable(value if isinstance(value, list) else [value] for value in merged_logs))
-                    #print("After Flattening:", merged_logs)
 
 
-                    #print(log_s)
+                    S = summary_method(KG, K, merged_logs) 
 
-                    S = summary_method(KG, K, merged_logs) # call the object as a function
-                    #print((S.__dict__['triples_'].keys()))
-                    #print(S.__dict__['number_of_triples_'])
                     runtime = time() - t0
+                    print("runtime: ", runtime)
                     update_time_list.append(runtime)
 
 
-                    total_F1, total_precision, total_recall = total_query_log_metrics(S, merged_logs)
+
+                    print("future queries")
+                    total_F1, total_precision, total_recall = total_query_log_metrics(S, test_set[i])
                     if DETAILED_LOGGING:
                         logging.info('\t  Total F1/precision/recall')
                         logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
                             total_F1, total_precision, total_recall))
 
-                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, merged_logs)
+                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_set[i])
                     if DETAILED_LOGGING:
                         logging.info('\t  Average F1/precision/recall')
                         logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
@@ -150,7 +142,64 @@ def answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc
                     acc_list.append(avg_F1)
                     print(total_F1, total_precision, total_recall)
                     print(avg_F1, avg_precision, avg_recall)
+
+
+                    print("sliding window of 2")
+                    timesteps = sorted(training_set.keys())
+
+                   #window size = 2
+                    window_size = 2
+                    for j in range(len(timesteps) - window_size + 1):  # Ensures we don't go out of bounds
+                        t1, t2 = timesteps[j : j + window_size]
+                        if t2 <= i and i != 0:
+                            print(f"Processing window: Timestep {t1} → Timestep {t2}")
                         
+                            data_t1 = training_set[t1]
+                            data_t2 = training_set[t2]
+
+                            combined_data = data_t1 + data_t2 
+                            print(len(combined_data))
+
+                            total_F1, total_precision, total_recall = total_query_log_metrics(S, combined_data)
+                            avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, combined_data)
+
+
+                        # Logging
+                            #if DETAILED_LOGGING:
+                            #    logging.info(f"\t  [{label}] Total F1/precision/recall: {total_F1:.2f}/{total_precision:.2f}/{total_recall:.2f}")
+                            #    logging.info(f"\t  [{label}] Average F1/precision/recall: {avg_F1:.2f}/{avg_precision:.2f}/{avg_recall:.2f}")
+
+                            print(total_F1, total_precision, total_recall)
+                            print(avg_F1, avg_precision, avg_recall)
+
+                    # if len(timesteps) >= window_size:
+                    #     t1, t2 = timesteps[-window_size:]  
+                        
+                    #     print(f"Processing window: Timestep {t1} → Timestep {t2}")
+                        
+                    #     data_t1 = training_set[t1]
+                    #     data_t2 = training_set[t2]
+
+                    #     combined_data = data_t1 + data_t2 
+                    #     print(len(combined_data))
+
+
+                    # total_F1, total_precision, total_recall = total_query_log_metrics(S, combined_data )
+                    # if DETAILED_LOGGING:
+                    #     logging.info('\t  Total F1/precision/recall')
+                    #     logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
+                    #         total_F1, total_precision, total_recall))
+
+                    # avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, combined_data)
+                    # if DETAILED_LOGGING:
+                    #     logging.info('\t  Average F1/precision/recall')
+                    #     logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
+                    #         avg_F1, avg_precision, avg_recall))
+                    
+                    acc_list.append(avg_F1)
+                    #print(total_F1, total_precision, total_recall)
+                    #print(avg_F1, avg_precision, avg_recall)
+                    ##    
                     #t+=1
 
                 logging.info('\t  Ave Time on Each Training Log: {:.2f} seconds'.format(np.mean(update_time_list)))
@@ -402,9 +451,24 @@ def main():
                 #     logging.info('---Saving generated queries---')
                 #     logs[i] = query_log
                     #print(query_log)
+                training_data = dict()
+                test_data = dict()
+
+                for i,j in logs.items():
+                    log = j 
+                    random.shuffle(log)
+                    len_logs = len(log)
+                    train_size = int(0.8* len_logs)  
+
+                    training_set = log[:train_size]
+                    test_set = log[train_size:]
+                    
+                    training_data[i] = training_set
+                    test_data[i] = test_set
+                    #print(len(training_set), len(test_set), len(log))
 
 
-                answer_queries_in_log(KG, K, i, logs, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=args.test_size, query_num_per_test=args.query_num_per_test)
+                answer_queries_in_log(KG, K, i, training_data, test_data, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=args.test_size, query_num_per_test=args.query_num_per_test)
 
             if args.save_queries:
                 logging.info('---Saving generated queries---')        
@@ -461,5 +525,3 @@ def main():
     logging.info('Shutting down...')
 if __name__ == '__main__':
     main()
-
-

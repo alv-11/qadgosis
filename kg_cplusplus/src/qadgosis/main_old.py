@@ -94,13 +94,6 @@ def personalized_graph(dynamic_graph, queries, timestep):
     return snapshot_s, w, personalization
 
 
-
-
-
-
-
-
-
 def initialize_data_structures():
     """Initialize all required data structures."""
     return (
@@ -113,7 +106,8 @@ def initialize_data_structures():
         dict(),  # ppr_walks
         dict(),  # ppr_cumsum_walks
         dict(),  # top_k_cumsum_walks
-        Counter()  # cumulative_counts
+        Counter(),  # cumulative_counts
+        dict(),  # all_weights
     )
 
 def preprocess_graph(dyngraph):
@@ -175,10 +169,61 @@ def calculate_top_k_cumulative(walk, cumulative_counts, k):
         normalized_counts = cumulative_counts  # Handle edge case of 0 total walks
     return dict(normalized_counts.most_common(k))
 
+def calculate_top_k_cumulative_with_weights(walk, cumulative_counts, k, timestep, counters, decay_rate=0.38, window_size=5):
+    """
+    Update cumulative counts and calculate the top-k nodes with weights and exponential decay.
+
+    :param walk: List of nodes visited during the walk.
+    :param cumulative_counts: Counter for cumulative counts of nodes.
+    :param k: Number of top nodes to select.
+    :param timestep: Current timestep.
+    :param counters: Dictionary of counters for each timestep.
+    :param decay_rate: Exponential decay rate for weights.
+    :param window_size: Number of timesteps to consider for decay.
+    :return: Dictionary of top-k nodes with normalized scores.
+    """
+    # Update the current timestep's counts
+    counts = Counter(walk)
+    counters[timestep] = counts
+
+    # Determine relevant timesteps for exponential decay
+    keys = sorted(counters.keys())
+    latest_timestep = keys[-1]
+    start_index = max(0, len(keys) - window_size)
+    relevant_timesteps = keys[start_index:]
+
+    # Apply exponential decay to counts
+    decayed_counts = Counter()
+    individual_weights = {}
+    for j in relevant_timesteps:
+        weight = decay_rate ** (latest_timestep - j)
+        print(f"Timestep {j} with weight {weight:.4f}")
+        individual_weights[j] = weight
+
+        for node, count in counters[j].items():
+            decayed_counts[node] += count * weight
+
+    # Update cumulative counts
+    cumulative_counts += decayed_counts
+
+    # Normalize counts
+    total_cumulative_walks = sum(cumulative_counts.values())
+    if total_cumulative_walks > 0:
+        normalized_counts = Counter({
+            key: count / total_cumulative_walks for key, count in cumulative_counts.items()
+        })
+    else:
+        normalized_counts = cumulative_counts  # Handle edge case of 0 total walks
+    # Select top-k nodes
+    top_k_cumulative = dict(normalized_counts.most_common(k))
+    return top_k_cumulative, individual_weights
+
 def generate_top_k_summary(num_timesteps=5, n_nodes=1000, m_edges=5, num_queries=20, num_walks=100, dynamic_graph=None, queries=None, c=2, epsilon=0.2, k=50):
     """Main function for generating top-k summaries."""
     (changes_over_time, random_walks, edge_to_walks, node_to_walks, walks_to_ids,
-     startnode_to_ids, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, cumulative_counts) = initialize_data_structures()
+     startnode_to_ids, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, cumulative_counts, all_weights) = initialize_data_structures()
+
+    counters = {}  # Initialize counters for each timestep
 
     for timestep in range(len(dynamic_graph)):
         print(f"Timestep {timestep}")
@@ -222,60 +267,15 @@ def generate_top_k_summary(num_timesteps=5, n_nodes=1000, m_edges=5, num_queries
         walk = compute_personalized_pagerank(w, L, epsilon, R, directed_graph)
         ppr_walks[timestep] = walk
         time_start = time.time()
-        top_k_cumsum_walks[timestep] = calculate_top_k_cumulative(walk, cumulative_counts, k)
+        top_k_cumsum_walks[timestep], all_weights[timestep] = calculate_top_k_cumulative_with_weights(walk, cumulative_counts, k, timestep, counters)
+
+        #top_k_cumsum_walks[timestep] = calculate_top_k_cumulative(walk, cumulative_counts, k)
         time_end = time.time()
         print(f"Time taken for top k: {time_end - time_start} seconds")
 
-    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks
+    return changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, all_weights
 
 
-
-
-
-# s_overif __name__=="__main__":
-
-    # c = 2 #constant for the PPR walk
-    # epsilon = 0.20  # Teleportation probability
-    # nodes = 10000
-    # num_walks = [10,100]#,5 10, 50, 100]#,0.01 0.005, 0.001, 0.0005] #[0.1, 0.05, 0.01, 0.05]
-    # k= 50
-    # for per in num_walks:
-    #     print(f"Running for {per} walkss")
-    #     output_directory = f"./output/nodes{nodes}_{per}/"
-    #     os.makedirs(output_directory, exist_ok=True)
-    #     logging.basicConfig(
-    #         level=logging.INFO, 
-    #         format='%(asctime)s - %(message)s', 
-    #         filename=f"{output_directory}ndcg_{nodes}nodes_{per}runtime.log",
-    #         #filename='./output/runtime_.log', 
-    #         filemode='w'  # 'w' for overwrite, 'a' for append
-    #     )
-
-    #     changes_over_time, random_walks, ppr_walks, ppr_cumsum_walks, top_k_cumsum_walks, top_k_power_nx = generate_top_k_summary(n_nodes=nodes, num_walks = per)
-    #     #ndcg, precision =  ndcg_metric(top_k_power_nx, top_k_cumsum_walks)
-    #     #df_scores = (pd.Series(ndcg).to_frame('ndcg').join(pd.Series(precision).to_frame('precision'), how='outer'))
-    #     print(df_scores)
-
-        
-    #     file_name = f"{output_directory}scores_{nodes}nodes_{per}walks.csv"
-    #     df_scores.to_csv(file_name)
-
-
-    #     # Convert sets to lists in changes_over_time dictionary
-    #     for key, value in changes_over_time.items():
-    #         changes_over_time[key] = {
-    #             "nodes_added": list(value["nodes_added"]),
-    #             "nodes_removed": list(value["nodes_removed"]),
-    #             "edges_added": list(value["edges_added"]),
-    #             "edges_removed": list(value["edges_removed"]),
-    #         }
-    #     # Write the dictionaries to files
-    #     #write_to_file(changes_over_time, "changes_over_time")
-    #     write_to_file(random_walks, "random_walks")    
-        #write_to_file(ppr_walks, "ppr_walks")
-        #write_to_file(ppr_cumsum_walks, "ppr_cumsum_walks", output_directory= output_directory)
-        #write_to_file(top_k_cumsum_walks, "top_k_cumsum_walks", output_directory= output_directory)
-        #write_to_file(top_k_power_nx, "top_k_power_nx", output_directory=output_directory)
 
 
 
