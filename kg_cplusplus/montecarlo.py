@@ -12,6 +12,8 @@ import scipy.sparse as sp
 import networkx as nx
 from time import time
 from src.base import KnowledgeGraph
+from collections import Counter
+import matplotlib.pyplot as plt
 
 from itertools import chain
 from src.base import KnowledgeGraph, YAGO, DBPedia, Freebase, MetaQA
@@ -21,79 +23,68 @@ from src.glimpse import SummaryMethod, GLIMPSE
 from src.metrics import total_query_log_metrics, average_query_log_metrics
 #import src.qadgosis.main as qadgosis
 import src.qadgosis.main  as walks
+from src.apex import APEX, DETAILED_LOGGING
+import cProfile
+from collections import defaultdict
+import pstats
+from concurrent.futures import ThreadPoolExecutor
 
 
 
 DETAILED_LOGGING = True
 DETAILED_PRINTING = False
 
-METHODS = {
+# METHODS = {
+#     'glimpse': SummaryMethod(GLIMPSE, 'GLIMPSE'),
+#     'apex': SummaryMethod(APEX, 'APEX')
+#     #'sankofa': SummaryMethod(SANKOFA, 'SANKOFA')
+# }
+METHODS = { 
     'glimpse': SummaryMethod(GLIMPSE, 'GLIMPSE'),
-    #'sankofa': SummaryMethod(SANKOFA, 'SANKOFA')
+    'glimpse-2': SummaryMethod(GLIMPSE, 'GLIMPSE-2', power=2),
+    'apex': SummaryMethod(APEX, 'APEX'),
+    #'apex-n': SummaryMethod(APEX_naive, 'APEX-N'),
+    #'pagerank': SummaryMethod(PR, 'PageRank')
 }
+from collections import defaultdict
+import random
+
+
+import random
+from collections import defaultdict
+
+
 
 
 
 class SummaryGraph(KnowledgeGraph):
-    def __init__(self, KG, top_k_nodes, max_triples=None):
+    def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
         super().__init__()
         self.parent_ = KG
         self.top_k_nodes = set(top_k_nodes)
         self.max_triples = max_triples
+        self.batch_size = batch_size
         self.triple_count = 0
         self.triples_set = set()
-        self.reverse_index = self._build_reverse_index()  # New
+        self.reverse_index = self._build_reverse_index()
         self.build_summary()
-
-    def _build_reverse_index(self):
-        """Index for reverse lookup: e1 ∈ neighbors → (e2, r, e1)"""
-        reverse_idx = {}
-        for e2, rel_dict in self.parent().triples_.items():
-            for r, neighbors in rel_dict.items():
-                for e1 in neighbors:
-                    if e1 not in reverse_idx:
-                        reverse_idx[e1] = []
-                    reverse_idx[e1].append((e2, r))
-        return reverse_idx
-
-    def build_summary(self):
-        parent_triples = self.parent().triples_
-        entity_ids = self.parent().entity_id_
-
-        for e1 in self.top_k_nodes:
-            if self._limit_reached():
-                break
-            if e1 not in entity_ids:
-                continue
-
-            # Outgoing edges
-            for r, neighbors in parent_triples.get(e1, {}).items():
-                for e2 in neighbors:
-                    if e2 in self.top_k_nodes:
-                        self._try_add_triple((e1, r, e2))
-                        if self._limit_reached():
-                            return
-
-            # Incoming edges (faster using pre-built reverse index)
-            for e2, r in self.reverse_index.get(e1, []):
-                if e2 in self.top_k_nodes:
-                    self._try_add_triple((e2, r, e1))
-                    if self._limit_reached():
-                        return
-
-        # Pad with random related triples if needed
-        if self.max_triples and self.triple_count < self.max_triples:
-            #print(f"Adding related random triples to reach {self.max_triples}.")
-            attempts = 0
-            while self.triple_count < self.max_triples and attempts < 10 * self.max_triples:
-                self.add_related_random_triple()
-                attempts += 1
 
     def parent(self):
         return self.parent_
 
     def _limit_reached(self):
-        return self.max_triples and self.triple_count >= self.max_triples
+        return self.max_triples is not None and self.triple_count >= self.max_triples
+
+    def _build_reverse_index(self):
+        reverse_idx = {}
+        top_k = self.top_k_nodes
+        triples = self.parent().triples_
+        for e2, rel_dict in triples.items():
+            for r, neighbors in rel_dict.items():
+                for e1 in neighbors:
+                    if e1 in top_k:
+                        reverse_idx.setdefault(e1, []).append((e2, r))
+        return reverse_idx
 
     def _try_add_triple(self, triple):
         if triple not in self.triples_set:
@@ -101,27 +92,65 @@ class SummaryGraph(KnowledgeGraph):
             self.triples_set.add(triple)
             self.triple_count += 1
 
-    def add_related_random_triple(self):
-        if self._limit_reached():
-            return
-        e1 = random.choice(list(self.top_k_nodes))
+    def build_summary(self):
         parent_triples = self.parent().triples_
+        entity_ids = self.parent().entity_id_
+        top_k = self.top_k_nodes
 
-        # Outgoing
-        for _ in range(5):  # Limit attempts
-            r_list = list(parent_triples.get(e1, {}).keys())
-            if r_list:
-                r = random.choice(r_list)
-                e2_list = list(parent_triples[e1][r])
-                if e2_list:
-                    e2 = random.choice(e2_list)
-                    self._try_add_triple((e1, r, e2))
-                    return
+        for e1 in top_k:
+            if e1 not in entity_ids:
+                continue
 
-        # Incoming (faster using reverse index)
-        if e1 in self.reverse_index:
-            e2, r = random.choice(self.reverse_index[e1])
-            self._try_add_triple((e2, r, e1))
+            for r, neighbors in parent_triples.get(e1, {}).items():
+                for e2 in neighbors:
+                    if e2 in top_k:
+                        self._try_add_triple((e1, r, e2))
+                        if self._limit_reached():
+                            return
+
+            for e2, r in self.reverse_index.get(e1, []):
+                if e2 in top_k:
+                    self._try_add_triple((e2, r, e1))
+                    if self._limit_reached():
+                        return
+
+        # Pad with related triples if needed
+        while not self._limit_reached():
+            self.add_related_random_triples_batch(batch_size=self.batch_size)
+
+    def add_related_random_triples_batch(self, batch_size=100):
+        parent_triples = self.parent().triples_
+        reverse_idx = self.reverse_index
+        top_k = list(self.top_k_nodes)
+
+        remaining = self.max_triples - self.triple_count
+        batch_size = min(batch_size, remaining)
+
+        candidates = []
+        for _ in range(batch_size):
+            e1 = random.choice(top_k)
+
+            # Outgoing
+            if e1 in parent_triples:
+                r_list = list(parent_triples[e1].keys())
+                if r_list:
+                    r = random.choice(r_list)
+                    e2_list = list(parent_triples[e1][r])
+                    if e2_list:
+                        e2 = random.choice(e2_list)
+                        candidates.append((e1, r, e2))
+
+            # Incoming
+            if e1 in reverse_idx:
+                e2_r_list = reverse_idx[e1]
+                if e2_r_list:
+                    e2, r = random.choice(e2_r_list)
+                    candidates.append((e2, r, e1))
+
+        for triple in candidates:
+            if self._limit_reached():
+                break
+            self._try_add_triple(triple)
 
 
 def flatten_list(nested_list):
@@ -171,7 +200,7 @@ def process_all_timesteps(training_set=None, summary=None, i=None, test_weights=
     return pd.DataFrame(output_data)
 
 
-def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data, walks_runtime=None):
+def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data, walks_runtime=None, summary_size=500):
     """
     Processes the summary graph and computes metrics.
 
@@ -193,9 +222,12 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
         top_k_nodes = top_k_nodes_dict[key]
         top_k_nodes = {str(node): value for node, value in top_k_nodes_dict[key].items()}
 
+        print(len(top_k_nodes), "top_k nodes for timestep", key)
+
         # Create a summary graph
         time_start = time()
-        S = SummaryGraph(KG, top_k_nodes.keys(), max_triples=200)
+
+        S = SummaryGraph(KG, top_k_nodes.keys(), max_triples = summary_size, batch_size=50)##len(top_k_nodes)/100)##, max_triples=500) 10
         time_end = time()
         
         runtime.append({"Timestep": key, "Runtime (summary)": time_end - time_start})
@@ -206,6 +238,7 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
         total_F1, total_precision, total_recall = total_query_log_metrics(S, log)
         avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, log)
         future.append({"Timestep": key, "Total F1": total_F1})
+
 
         test_weights = weights[key]
 
@@ -233,10 +266,11 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
     sankofa = merged_df[["Timestep", "Runtime (seconds)", "Future Test F1", "Weighted Future Test F1"]]
 
     sankofa.to_csv(f"sankofa_results.csv", index=False)
+    print(sankofa)
     return triples_no
 
 
-def process_summary_glimpse(graphs, triples_no_mc, training_data, test_data, method, weights):
+def process_summary_glimpse(graphs, triples_no_mc, training_data, test_data, method , weights):
     """
     Answers queries in the log and computes metrics.
 
@@ -252,55 +286,112 @@ def process_summary_glimpse(graphs, triples_no_mc, training_data, test_data, met
     future = []
     weighted_tests = []
     runtime = []
-    print("Summarizing for GLIMPSE")
+    weighted_tests_apex = []
+    apex = []
+    
+
+    update_time_list = []
+    acc_list = []
+
     for summary_method in summary_methods:
-        for i in graphs.keys() & triples_no_mc.keys() & weights.keys():
-            KG = graphs[i]
-            K = triples_no_mc[i]
-
-            update_time_list = []
-            acc_list = []
-            test_weights = weights[i]
+        if summary_method.name_[0:7] == 'GLIMPSE' and summary_method.name_[0:4] != 'APEX':
+            print("Summarizing for GLIMPSE")
+            for i in graphs.keys() & triples_no_mc.keys() & weights.keys():
+                KG = graphs[i]
+                K = triples_no_mc[i]
 
 
-            if i == 0:
-                #print(f"Summarizing for query: {i}")
-                t0 = time()
-                S = summary_method(KG, K, training_data[i])
-                #runtime = time() - t0
-                runtime.append({"Timestep": i, "Runtime (seconds)": time() - t0})
+                test_weights = weights[i]
+
+                if i == 0:
+                    #print(f"Summarizing for query: {i}")
+                    t0 = time()
+                    S = summary_method(KG, K, training_data[i])
+                    #runtime = time() - t0
+                    runtime.append({"Timestep": i, "Runtime (seconds)": time() - t0})
 
 
-                total_F1, total_precision, total_recall = total_query_log_metrics(S, test_data[i])
-                avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_data[i])
-                #print(total_F1, total_precision, total_recall)
-                #print(avg_F1, avg_precision, avg_recall)
+                    total_F1, total_precision, total_recall = total_query_log_metrics(S, test_data[i])
+                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_data[i])
+                    #print(total_F1, total_precision, total_recall)
+                    #print(avg_F1, avg_precision, avg_recall)
 
-                future.append({"Timestep": i, "Total F1": total_F1})
-                df = process_all_timesteps(training_set=test_data, summary=S, i=i, test_weights=test_weights)
-                weighted_tests.append(df)
+                    future.append({"Timestep": i, "Total F1": total_F1})
+                    df = process_all_timesteps(training_set=test_data, summary=S, i=i, test_weights=test_weights)
+                    weighted_tests.append(df)
 
-            else:
-                #print(f"Re-summarizing for query: {i}")
-                t0 = time()
+                else:
+                    #print(f"Re-summarizing for query: {i}")
+                    
 
-                keys = list(training_data.keys())
-                target_index = keys.index(i)
-                merged_logs = [training_data[key] for key in keys[:target_index + 1]]
-                merged_logs = list(flatten_list(merged_logs))
+                    keys = list(training_data.keys())
+                    target_index = keys.index(i)
+                    merged_logs = [training_data[key] for key in keys[:target_index + 1]]
+                    merged_logs = list(flatten_list(merged_logs))
 
-                S = summary_method(KG, K, merged_logs)
-                runtime.append({"Timestep": i, "Runtime (seconds)": time() - t0})
-                #runtime = time() - t0
-                #print("Runtime:", runtime)
-                #update_time_list.append(runtime)
+                    t0 = time()
+                    S = summary_method(KG, K, merged_logs)
+                    runtime.append({"Timestep": i, "Runtime (seconds)": time() - t0})
+                    #runtime = time() - t0
+                    #print("Runtime:", runtime)
+                    #update_time_list.append(runtime)
 
-                total_F1, total_precision, total_recall = total_query_log_metrics(S, test_data[i])
-                avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_data[i])
-                future.append({"Timestep": i, "Total F1": total_F1})
+                    total_F1, total_precision, total_recall = total_query_log_metrics(S, test_data[i])
+                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_data[i])
+                    future.append({"Timestep": i, "Total F1": total_F1})
+                    #print(avg_F1)
 
-                df = process_all_timesteps(training_set=test_data, summary=S, i=i, test_weights=test_weights)
-                weighted_tests.append(df)
+                    df = process_all_timesteps(training_set=test_data, summary=S, i=i, test_weights=test_weights)
+                    weighted_tests.append(df)
+
+        elif summary_method.name_ == 'APEX':
+            print("Summarizing for APEX")
+                
+           
+            for i in graphs.keys() & triples_no_mc.keys() & weights.keys():
+                KG = graphs[i]
+                K = triples_no_mc[i]
+                training = training_data[i]
+                test = test_data[i]
+                test_weights = weights[i]
+
+                update_time_list = []
+                acc_list = []
+
+                #acc_list, update_time_list, P  = APEX(KG, K, training, test, t=i)
+                # Initial run
+                if i ==0:
+                    P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training, test, t=i)
+                    apex.append({
+                        "Timestep": i,
+                        "Future Test F1": total_F1,
+                        "Runtime (seconds)": run_time
+                    })
+                    df = process_all_timesteps(training_set=test_data, summary=P, i=i, test_weights=test_weights)
+                    weighted_tests_apex.append(df)
+
+                
+                else:
+                    try:
+                        P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+                            KG, K, training, test, t=i,
+                            H=H, q=q, e=e, r=r,
+                            csr_indirect_matrices=csr,
+                            index_list=index_list
+                        )
+                    except:
+                        break
+                    apex.append({
+                        "Timestep": i,
+                        "Future Test F1": total_F1,
+                        "Runtime (seconds)": run_time
+                    })
+                    df = process_all_timesteps(training_set=test_data, summary=P, i=i, test_weights=test_weights)
+                    weighted_tests_apex.append(df)
+
+
+    
+    ########clean this up
     timestep_runtime = pd.DataFrame(runtime)
     F1_future_tests = pd.DataFrame(future).rename(columns={"Total F1": "Future Test F1"})
     F1_future_weighted_tests = pd.concat(weighted_tests, ignore_index=True).rename(columns={"Timestep Window": "Timestep", "Total F1": "Weighted Future Test F1"})
@@ -314,11 +405,33 @@ def process_summary_glimpse(graphs, triples_no_mc, training_data, test_data, met
     merged_df = pd.merge(timestep_runtime, F1_future_tests, on="Timestep")
     glimpse = pd.merge(merged_df, F1_future_weighted_tests, on="Timestep")
 
+    print("GLIMPSE")
+    print(glimpse)
+
+
+    ########clean this up
+    apex_df = pd.DataFrame(apex).drop_duplicates(subset='Timestep')
+    F1_apex_weighted_tests = pd.concat(weighted_tests_apex, ignore_index=True).rename(columns={"Timestep Window": "Timestep", "Total F1": "Weighted Future Test F1"}).drop_duplicates(subset='Timestep')
+
+    # Ensure 'Timestep' column has the same type in all DataFrames
+    apex_df["Timestep"] = apex_df["Timestep"].astype(int)
+    F1_apex_weighted_tests["Timestep"] = F1_apex_weighted_tests["Timestep"].astype(int)
+
+    # Merge DataFrames sequentially
+    apex_df = pd.merge(apex_df, F1_apex_weighted_tests, on="Timestep")
+    apex_df = apex_df[["Timestep", "Runtime (seconds)", "Future Test F1", "Weighted Future Test F1"]]
+    
+    print("APEX")
+    print(apex_df)
     glimpse.to_csv("glimpse_results.csv", index=False)
+    apex_df.to_csv("apex_results.csv", index=False)
 
 
-if __name__ == "__main__":
-    subgraph_dir ='../PKG_EXP/DBpedia/dbpedia_subgraphs_int'
+
+
+
+def main() -> None:
+    subgraph_dir ='../PKG_EXP/DBpedia/dbpedia_subgraphs_int10'#dbpedia_subgraphs_int8'#
     dynagraph, queries_, graphs, training_data, test_data = {}, {}, {}, {}, {}
 
     print("Loading all subgraph snapshots...")
@@ -334,8 +447,27 @@ if __name__ == "__main__":
         for s, p, o in KG.triples():
             G.add_edge(s, o, predicate=p, weight=0.01)
 
+        degrees = [G.degree(n) for n in G.nodes()]
+        # Frequency of each degree
+        degree_counts = Counter(degrees)
+
+        import powerlaw
+        x, y = zip(*sorted(degree_counts.items()))
+        degrees = [d for _, d in G.degree()]
+        fit = powerlaw.Fit(degrees, verbose=False)
+
+        print(f"Alpha: {fit.alpha}, xmin: {fit.xmin}")
+        R, p = fit.distribution_compare('power_law', 'lognormal')
+        print(f"R={R}, p={p}")
+
+
+
         dynagraph[i] = G
         graphs[i] = KG
+        print(KG.number_of_triples(), "triple size")
+
+        #print(KG.number_of_triples(), "triples in snapshot", i)
+        print(len(KG.triples_.keys()), "entities in snapshot", i)
 
         topic_mids = random.sample(list(KG.triples_.keys()), k=2)
         query_log = query_log_by_mids(
@@ -355,6 +487,12 @@ if __name__ == "__main__":
 
         print(f"Processed snapshot {i}: {file_name} in {time() - start:.2f}s")
 
+        if i == 0:
+            summary_size= int(KG.number_of_triples() * 0.05) #0.001, 0.005, 0.01
+            K = summary_size#int(summary_size/2) #num_top_k
+
+            print(K, "top_k", summary_size, KG.number_of_triples(), "triple size")
+
     # Example: simulate top-k node selection (this should be replaced with actual method)
     top_k_nodes_dict = {}
     for t, G in dynagraph.items():
@@ -364,7 +502,10 @@ if __name__ == "__main__":
 
     # Run evaluation on the summaries
     print("Evaluating summary graphs...")
-    K=100
+    
+
+
+    
     #changes_over_time, random_walks, _, _, top_k_cumsum_walks, weights= qadgosis.generate_top_k_summary(num_walks = 100, dynamic_graph=dynagraph , queries=queries_, c= 2, epsilon = 0.20, k=K)
 
     converted_dynagraph = []
@@ -375,7 +516,7 @@ if __name__ == "__main__":
             for neighbor in graph[node]:
                 # Ensure neighbors exist and weights are valid
                 if graph[node][neighbor]:
-                    neighbors[int(neighbor)] = float(graph[node][neighbor].get("weight", 0.1))  # Default weight is 0.5
+                    neighbors[int(neighbor)] = float(graph[node][neighbor].get("weight", 0.0001))  # Default weight is 0.5
             converted_graph[int(node)] = neighbors
         converted_dynagraph.append(converted_graph)
 
@@ -388,11 +529,11 @@ if __name__ == "__main__":
 
     results = walks.generate_top_k_summary(
     num_timesteps=len(converted_dynagraph),
-    num_walks=10,  # Reduce number of walks for testing
+    num_walks=100,  # Reduce number of walks for testing
     dynamic_graph=converted_dynagraph,
     queries=converted_queries,
     c=2,
-    epsilon=0.2,
+    epsilon=0.95,
     k=K,
     decay_rate = .9
     )
@@ -401,12 +542,17 @@ if __name__ == "__main__":
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
     weights = results["all_weights"]
     runtime_per_timestep = results["runtime_per_timestep"]
-    print(weights)
+    #print(weights)
 
     # Convert runtime_per_timestep to a DataFrame-friendly format
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
     ).sort_values(by="Timestep")
 
-    triples_no = process_summary_sankofa(top_k_cumsum_walks, graphs, label="Cumsum Walks", weights=weights, test_data=test_data, walks_runtime = runtime_df)
-    process_summary_glimpse(graphs, triples_no, training_data, test_data, method=["glimpse"], weights=weights)
+    triples_no = process_summary_sankofa(top_k_cumsum_walks, graphs, label="Cumsum Walks", weights=weights, test_data=test_data, walks_runtime = runtime_df, summary_size=summary_size)
+    print(triples_no)
+    process_summary_glimpse(graphs, triples_no, training_data, test_data, method=["glimpse", "apex"], weights=weights)
+
+
+if __name__ == "__main__":
+    main()

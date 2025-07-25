@@ -180,7 +180,7 @@ RandomWalkResult generate_random_walks(const Graph_ &weighted_graph, int num_wal
     return result;
 }
 
-RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length = 10) {
+RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length) {
     RandomWalkResult result;
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -505,6 +505,8 @@ TopKSummaryWithWeights generate_top_k_summary(
         }
         int n = nodes_set.size();
         int L = calculate_required_walk_length(c, epsilon, k, n);
+        int walk_length = static_cast<int>(std::round(1.0 / epsilon));
+        cout << "average walk length " << t << ": " << walk_length << endl;
         cout << "Required length of PPR walk " << t << ": " << L << endl;
 
         // Preprocess (we already have weighted edges)
@@ -512,10 +514,10 @@ TopKSummaryWithWeights generate_top_k_summary(
 
         RandomWalkResult R;
         if (t == 0) {
-            R = generate_random_walks_directed_weighted(weighted_graph, num_walks);
+            R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
             summary.random_walks[t] = R;
         } else {
-            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, 10);
+            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
             summary.random_walks[t] = R;
         }
 
