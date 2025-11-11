@@ -3,3 +3,5 @@
 *.csv
 *.gz
 *.pkl
+*.nt
+PKG_EXP/DBpedia/dbpedia_files/
