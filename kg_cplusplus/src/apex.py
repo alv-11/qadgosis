@@ -98,19 +98,29 @@ def get_heat(heat, indices):
 
 
 
-def Heat_Diffuse(heat, KG, query, d, csr_indirect_matrices): # adj matrix and heat
+def Heat_Diffuse(heat, KG, query, d, csr_indirect_matrices):  # adj matrix and heat
     q = np.zeros(KG.number_of_entities())
     parse = query['Parse']
     topic_mid = parse['TopicEntityMid']
     topic_eid = KG.entity_id(parse['TopicEntityMid'])
     relation = parse['InferentialChain'][0]
-    answers = KG[topic_mid][relation]
+
+    # Validate topic_mid before accessing
+    if topic_mid not in KG.triples_:
+        print(f"Warning: topic_mid '{topic_mid}' not found in KG.triples_")
+        return heat, []
+
+    try:
+        answers = KG[topic_mid][relation]
+    except KeyError:
+        print(f"KeyError: relation '{relation}' not found for topic_mid '{topic_mid}'")
+        return heat, []
+
     q[topic_eid] += 1
-    answers_rid = np.zeros(len(answers), dtype = int)
+    answers_rid = np.zeros(len(answers), dtype=int)
     for i, item in enumerate(answers):
         answers_rid[i] = KG.entity_id(item)
-        q[answers_rid[i]] += 1/len(answers)
-
+        q[answers_rid[i]] += 1 / len(answers)
 
     # diffuse through edges (indirect)
     # TODO: Diffuse should be according to number of neighbors
@@ -457,8 +467,15 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
             topic_eid = KG.entity_id(parse['TopicEntityMid'])
+            if topic_eid is None:
+                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
+                continue
             relation = parse['InferentialChain'][0]
-            answers = KG[topic_mid][relation]
+            try:
+                answers = KG[topic_mid][relation]
+            except KeyError:
+                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
+                continue
             q[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -560,8 +577,15 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
             topic_eid = KG.entity_id(parse['TopicEntityMid'])
+            if topic_eid is None:
+                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
+                continue
             relation = parse['InferentialChain'][0]
-            answers = KG[topic_mid][relation]
+            try:
+                answers = KG[topic_mid][relation]
+            except KeyError:
+                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
+                continue
             q_T[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -690,8 +714,15 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
             topic_eid = KG.entity_id(parse['TopicEntityMid'])
+            if topic_eid is None:
+                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
+                continue
             relation = parse['InferentialChain'][0]
-            answers = KG[topic_mid][relation]
+            try:
+                answers = KG[topic_mid][relation]
+            except KeyError:
+                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
+                continue
             q[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -733,8 +764,8 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
 
         # Construct initial summary
         P = construct_complete(KG, K, index_list)
-        initial_time = time() - t0
-        print(initial_time, "time taken for initial construction")
+        update_time = time() - t0
+        print(update_time, "time taken for initial construction")
         # Test for initial graph
         if DETAILED_LOGGING:
             logging.info('Initial Test')
@@ -783,8 +814,15 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
             topic_eid = KG.entity_id(parse['TopicEntityMid'])
+            if topic_eid is None:
+                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
+                continue
             relation = parse['InferentialChain'][0]
-            answers = KG[topic_mid][relation]
+            try:
+                answers = KG[topic_mid][relation]
+            except KeyError:
+                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
+                continue
             q_T[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -877,4 +915,5 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
     logging.info('\t  Ave Time on Each Training Log: {:.2f} seconds'.format(np.mean(update_time_list)))
     logging.info('\t  Ave Ave F1 on Each Training Log: {:.2f}'.format(np.mean(acc_list)))
 
-    return acc_list, update_time_list, P
+    #return acc_list, update_time_list, P
+    return total_F1, update_time, P

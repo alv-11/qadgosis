@@ -17,6 +17,8 @@
 #include <cmath>
 #include <iomanip>
 
+
+
 // Structure to hold the top-k summary.
 struct TopKSummary {
     std::unordered_map<int, GraphChanges> changes_over_time;

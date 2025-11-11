@@ -18,7 +18,7 @@ from collections import defaultdict
 
 output_dir = "../PKG_EXP/DBpedia/dbpedia_files"
 output_new = "../PKG_EXP/DBpedia/dbpedia_subgraphs"
-output_int = "../PKG_EXP/DBpedia/dbpedia_subgraphs_int"
+output_int = "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall"
 
 # output_dir = "../PKG_EXP/DBpedia/dbpedia_files_mapping"
 # output_new = "../PKG_EXP/DBpedia/dbpedia_subgraphs_mapping"
@@ -29,22 +29,22 @@ output_int = "../PKG_EXP/DBpedia/dbpedia_subgraphs_int"
 def dbpedia_download(output_dir):
     base_url = 'http://downloads.dbpedia.org/'
 
-    # data_files = [
-    #     ("3.9/en/skos_categories_en.nt.bz2", "categories_5.nt.bz2"), #09/2013
-    #     ("3.8/en/skos_categories_en.nt.bz2", "categories_4.nt.bz2"), #08/2012
-    #     ("3.7/en/skos_categories_en.nt.bz2", "categories_3.nt.bz2"), # 08/2011
-    #     ("3.6/en/skos_categories_en.nt.bz2", "categories_2.nt.bz2"), #01/20211
-    #     ("3.5.1/en/skos_categories_en.nt.bz2", "categories_1.nt.bz2"),#04/2010
-    # ]
-
     data_files = [
-        ("3.9/en/article_categories_en.nt.bz2", "mapping_5.nt.bz2"), #09/2013
-        ("3.8/en/article_categories_en.nt.bz2", "mapping_4.nt.bz2"), #08/2012
-        ("3.7/en/article_categories_en.nt.bz2", "mapping_3.nt.bz2"), # 08/2011
-        ("3.6/en/article_categories_en.nt.bz2", "mapping_2.nt.bz2"), #01/20211
-        ("3.5.1/en/article_categories_en.nt.bz2", "mapping_1.nt.bz2"),#04/2010
+        ("3.9/en/skos_categories_en.nt.bz2", "categories_5.nt.bz2"), #09/2013
+        ("3.8/en/skos_categories_en.nt.bz2", "categories_4.nt.bz2"), #08/2012
+        ("3.7/en/skos_categories_en.nt.bz2", "categories_3.nt.bz2"), # 08/2011
+        ("3.6/en/skos_categories_en.nt.bz2", "categories_2.nt.bz2"), #01/20211
+        ("3.5.1/en/skos_categories_en.nt.bz2", "categories_1.nt.bz2"),#04/2010
     ]
-    os.makedirs(output_dir, exist_ok=True)
+
+    # data_files = [
+    #     ("3.9/en/article_categories_en.nt.bz2", "mapping_5.nt.bz2"), #09/2013
+    #     ("3.8/en/article_categories_en.nt.bz2", "mapping_4.nt.bz2"), #08/2012
+    #     ("3.7/en/article_categories_en.nt.bz2", "mapping_3.nt.bz2"), # 08/2011
+    #     ("3.6/en/article_categories_en.nt.bz2", "mapping_2.nt.bz2"), #01/20211
+    #     ("3.5.1/en/article_categories_en.nt.bz2", "mapping_1.nt.bz2"),#04/2010
+    # ]
+    # os.makedirs(output_dir, exist_ok=True)
 
     #download and rename
     print('Starting file downloads...')
@@ -125,13 +125,13 @@ def extract_top_triples(input_dir, output_dir, max_triples=10000):
             print(f"Processed: {filename} → Saved to {output_file} (strongly connected triples)")
 
 
-def load_mapping_(mapping_file):
+def load_mapping(mapping_file):
     if os.path.exists(mapping_file):
         with open(mapping_file, 'rb') as f:
             return pickle.load(f)
     return {}, {}, 0
 
-def save_mapping_(mapping_file, node_to_id, id_to_node, current_id):
+def save_mapping(mapping_file, node_to_id, id_to_node, current_id):
     os.makedirs(os.path.dirname(mapping_file), exist_ok=True)
     with open(mapping_file, 'wb') as f:
         pickle.dump((node_to_id, id_to_node, current_id), f)
@@ -207,7 +207,7 @@ def extract_top_triples_int_(input_dir, output_dir, mapping_file, max_triples=10
             save_mapping(mapping_file, node_to_id, id_to_node, current_id)
 
   
-def extract_top_triples_int__(input_dir, output_dir, mapping_file, max_triples=100000):
+def extract_top_triples_int__(input_dir, output_dir, mapping_file):#, max_triples=None):
     os.makedirs(output_dir, exist_ok=True)
 
     # Load mapping only once at the start
@@ -250,8 +250,8 @@ def extract_top_triples_int__(input_dir, output_dir, mapping_file, max_triples=1
                 selected_triples.add((s_id, p_id, o_id))
 
                 # Stop if max_triples is reached
-                if len(selected_triples) >= max_triples:
-                    break
+                #if len(selected_triples) >= max_triples:
+                    #break
 
             # Save the transformed triples to a file
             with gzip.open(output_file, 'wt') as out_f:
@@ -1031,7 +1031,9 @@ def extract_top_triples_int_new_new(input_dir, output_dir, mapping_file, max_tri
 if __name__ == "__main__":
     #dbpedia_download(output_dir)
     #change_bz2_to_gz(output_dir)
-    mapping_file = "mappings/id_mappings_new.pkl"#"mappings/id_mappings_article.pkl"# "mappings/id_mappings_mappings.pkl"#
-    extract_top_triples_int_new(output_dir, output_int, mapping_file,  max_triples=10000)
+    mapping_file = "mappings/id_intall_new.pkl"#"mappings/id_mappings_article.pkl"# "mappings/id_mappings_mappings.pkl"#
+    extract_top_triples_int__(output_dir, output_int, mapping_file)
+    #extract_top_triples_int_new(output_dir, output_int, mapping_file,  max_triples=10000)
+
 
 
