@@ -813,12 +813,12 @@ def main():
     )
     sankofa.to_csv("sankofa_results.csv", index=False)
 
-    # sota = process_summary_baselines(
-    #     graphs, triples_no, training_data, test_data,
-    #     methods=["glimpse", "apex", "isummary"], weights=weights
-    # )
-    # merged_df = pd.merge(sankofa, sota, on="Timestep")
-    # merged_df.to_csv("all_results.csv", index=False)
+    sota = process_summary_baselines(
+        graphs, triples_no, training_data, test_data,
+        methods=["glimpse", "apex", "isummary"], weights=weights
+    )
+    merged_df = pd.merge(sankofa, sota, on="Timestep")
+    merged_df.to_csv("all_results.csv", index=False)
 
 if __name__ == "__main__":
     main()
