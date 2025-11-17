@@ -64,11 +64,11 @@ def generate_queries_by_topic(KG, topic, n_topic_queries, n_topic_mids):
 
     Example directory structure:
 
-    <KG.topic_dir()>/
+    <KG.topic_dir()>/ 
         art.list
         music.list
         geography.list
-    <KG.query_dir()>/
+    <KG.query_dir()>/ 
         q1.json
         q2.json
         q3.json
@@ -120,11 +120,11 @@ def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid):
 
     Example directory structure:
 
-    <KG.mid_dir()>/
+    <KG.mid_dir()>/ 
         m123e9.list
         g1048d.list
         m5ehk3.list
-    <KG.query_dir()>/
+    <KG.query_dir()>/ 
         q1.json
         q2.json
         q3.json
@@ -167,10 +167,16 @@ def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False):
     :param shuffle: randomly shuffle the returned log
     :return query_log: updated query log
     """
+    query_dir = KG.query_dir()
+    if not os.path.exists(query_dir):
+        # Create the directory if it doesn't exist
+        os.makedirs(query_dir, exist_ok=True)
+        print(f"Query directory '{query_dir}' did not exist. It has been created.")
+
     n_random = np.int64(random_query_prob * len(query_log))
     indices = np.random.randint(len(query_log), size=n_random)
 
-    query_fnames = os.listdir(KG.query_dir())
+    query_fnames = os.listdir(query_dir) if os.path.exists(query_dir) else []
     # pdb.set_trace()
 
     # Add randomly selected queries at specified indices
