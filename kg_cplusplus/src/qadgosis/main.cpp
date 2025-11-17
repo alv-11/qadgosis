@@ -1075,7 +1075,7 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
 
-        for (const auto& [start_node, walks] : processed_R) {
+     /*   for (const auto& [start_node, walks] : processed_R) {
             auto& dest = accumulated_walks[start_node];
             dest.insert(dest.end(), walks.begin(), walks.end());
         }
@@ -1108,7 +1108,7 @@ TopKSummaryWithWeights generate_top_k_summary(
            << ", damping_t: " << damping_t << "\n";
 
 
-
+*/
 
 
         
@@ -1126,7 +1126,7 @@ TopKSummaryWithWeights generate_top_k_summary(
         // auto pr5 = MCWalks::MC_CompletePath_RandomStart_FromWalks(processed_R, n, len_R);
         
 
-        auto pr_hybrid = HybridMC::hybrid_completepath_poweriteration_from_walks(accumulated_walks, accumulated_graph, damping_t, 1e-6, 20);
+  //      auto pr_hybrid = HybridMC::hybrid_completepath_poweriteration_from_walks(accumulated_walks, accumulated_graph, damping_t, 1e-6, 20);
         //auto pr_hybrid = HybridMC::hybrid_completepath_poweriteration_from_walks_weighted(decayed_pi, accumulated_graph, damping_t, 1e-6, 20);
         
 
@@ -1169,8 +1169,8 @@ TopKSummaryWithWeights generate_top_k_summary(
 
         // Calculate top-k cumulative with weights
         //auto top_k_result = calculate_top_k_cumulative_with_weights_oracle(walk, cumCounts, k, t, counters, personalizedoracle, oracle, decay_rate, num_timesteps, n);
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr_hybrid, decay_rate, num_timesteps, n);
-        //auto top_k_result = calculate_top_k_cumulative_with_weights_(walk, cumCounts, k, t, counters, decay_rate, num_timesteps, n);
+    //    auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr_hybrid, decay_rate, num_timesteps, n);
+        auto top_k_result = calculate_top_k_cumulative_with_weights_(walk, cumCounts, k, t, counters, decay_rate, num_timesteps, n);
         
         
         

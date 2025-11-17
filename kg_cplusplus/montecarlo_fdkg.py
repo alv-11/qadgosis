@@ -1,4 +1,7 @@
 import os
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import time
 import random
 import numpy as np
@@ -997,7 +1000,7 @@ def main() :
     #
     #subgraph_dir = '../PKG_EXP/DBpedia/dbpedia_subgraphs_intall'#dbpedia_subgraphs_int8'#
     #subgraph_dir =   "/Users/au735195/Downloads/KG_GDELT" 
-    subgraph_dir = "/Users/au735195/Desktop/wiki/snapshots"
+    subgraph_dir = "/home/ama/wiki_all"#/Users/au735195/Desktop/wiki/snapshots"
 
     #subgraph_dir ='../PKG_EXP/DBpedia/KG_snapshots'#dbpedia_subgraphs_int8'#
     #subgraph_dir = "/Users/au735195/Downloads/KG_IMDB-13-3SP"
@@ -1015,7 +1018,7 @@ def main() :
     print("Loading all subgraph snapshots...")
 
     for i, file_name in enumerate(snapshot_files):
-        #file = "snapshot_5.nt.gz"
+        #file = "snapshot_0.nt.gz"
         path = os.path.join(subgraph_dir, file_name)
         print(f"Processing snapshot {i}: {file_name}")
         
@@ -1107,8 +1110,8 @@ def main() :
 
 
         # Define the path to save the query_log
-        query_log_file = f"query_log_snapshotwiki_5__{i}.pkl"#f"query_log_snapshot_110_{i}.pkl"
-        #query_log_file = f"query_log_snapshotimdb_15_FIXED1.pkl"#f"query_log_snapshot_110_{i}.pkl"
+        #query_log_file = f"query_log_snapshotwiki_5___{i}.pkl"#f"query_log_snapshot_110_{i}.pkl"
+        query_log_file = f"query_log_snapshotwiki_5_FIXED1.pkl"#f"query_log_snapshot_110_{i}.pkl"
         if os.path.exists(query_log_file):
             # Load the query_log from the file if it exists
             print(f"Loading query_log from {query_log_file}")
@@ -1138,8 +1141,8 @@ def main() :
         print(f"Processed snapshot {i}: {file_name} in {time() - start:.2f}s")
 
         if i == 0:
-            summary_size= int(KG.number_of_triples() * 0.001) #0.001, 0.005, 0.01
-            K= int(k1/20)#int(KG.number_of_entities()/10)#int(k1)#100#k1#(KG.number_of_entities())**2/KG.number_of_triples()
+            summary_size= int(KG.number_of_triples() * 0.005) #0.001, 0.005, 0.01
+            K= int(k1/50)#int(KG.number_of_entities()/10)#int(k1)#100#k1#(KG.number_of_entities())**2/KG.number_of_triples()
             #K = len(KG.triples_.keys())#int(1000/(summary_size*100))#int(summary_size*.002)
 
 
@@ -1182,7 +1185,7 @@ def main() :
 
     results = walks.generate_top_k_summary(
     num_timesteps=len(converted_dynagraph),
-    num_walks=5,  # Reduce number of walks for testing
+    num_walks=20,  # Reduce number of walks for testing
     dynamic_graph=converted_dynagraph,
     queries=converted_queries,
     c=5,
@@ -1207,7 +1210,7 @@ def main() :
 
     print(summary_size, K, "summary size and k")
     triples_no, sankofa = process_summary_sankofa(top_k_cumsum_walks, graphs, label="Cumsum Walks", weights=weights, test_data=test_data, walks_runtime = runtime_df, max_triples=summary_size, query_freq=queryfreq_, n_priority=k1)
-    # print(triples_no)
+    print(triples_no)
     # #{0: 22434, 1: 22434, 2: 22434, 3: 22434, 4: 22434}
     sankofa.to_csv(f"all_results.csv", index=False)
     sota = process_summary_glimpse(graphs, triples_no, training_data, test_data, method=["glimpse", "apex"], weights=weights)
