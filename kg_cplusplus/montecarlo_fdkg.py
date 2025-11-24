@@ -996,7 +996,7 @@ def extract_snapshot_number(filename):
 
 def main() :
 
-    #subgraph_dir ='../PKG_EXP/DBpedia/dbpedia_subgraphs_int10'#dbpedia_subgraphs_int8'#
+    #subgraph_dir ='../PKG_EXP/DBpedia/dbpedia_subgraphs_int10'#dbpedia_subgraphs_int7'#
     #
     #subgraph_dir = '../PKG_EXP/DBpedia/dbpedia_subgraphs_intall'#dbpedia_subgraphs_int8'#
     #subgraph_dir =   "/Users/au735195/Downloads/KG_GDELT" 

@@ -744,7 +744,12 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
         double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
 
         //double weight = pu * puv * pv;
-        double weight = puv * pv;
+        //double weight = puv * pv;
+        
+
+
+        double alpha = 0.25;
+        double weight = (1.0 - alpha) * puv + alpha * pv;
         weighted_scores.emplace_back(node, weight);
 
 
@@ -996,7 +1001,7 @@ TopKSummaryWithWeights generate_top_k_summary(
     std::unordered_map<int, std::unordered_map<int, int>> counters;  // counters for each timestep
 
     auto query_freqs = compute_query_entity_frequencies_by_timestep(queries);
-    int total_R = 0;
+    //int total_R = 0;
 
 
     // Result per timestep
@@ -1072,61 +1077,56 @@ TopKSummaryWithWeights generate_top_k_summary(
         auto processed_R = process_walk_results(R.precomputed_walks);
         processed_R_per_t.push_back(processed_R);
 
+        //int len_R = processed_R.begin()->second.size();
+        //for (auto &kv : processed_R) total_R += kv.second.size();
 
 
 
-     /*   for (const auto& [start_node, walks] : processed_R) {
-            auto& dest = accumulated_walks[start_node];
-            dest.insert(dest.end(), walks.begin(), walks.end());
-        }
+
+        // for (const auto& [start_node, walks] : processed_R) {
+        //     auto& dest = accumulated_walks[start_node];
+        //     dest.insert(dest.end(), walks.begin(), walks.end());
+        // }
        
 
 
 
-        for (int past_t = 0; past_t <= t; ++past_t) {
-            double decay = std::pow(decay_rate, t - past_t); //std::exp(-decay_rate * (latest_timestep - j));
-            for (const auto& [u, nbrs] : dynamic_graph[past_t]) {
-                for (const auto& [v, w] : nbrs) {
-                    accumulated_graph[u][v] += w * decay;
-                    accumulated_nodes.insert(v);
-                }
-            }
-        }
+        // for (int past_t = 0; past_t <= t; ++past_t) {
+        //     //double decay = std::pow(decay_rate, t - past_t); //std::exp(-decay_rate * (latest_timestep - j));
+        //     for (const auto& [u, nbrs] : dynamic_graph[past_t]) {
+        //         for (const auto& [v, w] : nbrs) {
+        //             //accumulated_graph[u][v] += w * decay;
+        //             accumulated_nodes.insert(v);
+        //         }
+        //     }
+        // }
         
 
 
-        double decay_rate = std::exp(-0.2 * t);       // decays over time
+        // double decay_rate = std::exp(-0.2 * t);       // decays over time
  
-        double damping_min = 0.6;
-        double damping_max = 0.88;                // new upper cap
-        double damping_t = damping_min + (damping_max - damping_min) * (1.0 - decay_rate);
+        // double damping_min = 0.6;
+        // double damping_max = 0.85;                // new upper cap
+        // double damping_t = damping_min + (damping_max - damping_min) * (1.0 - decay_rate);
 
 
-         std::cout << "Timestep: " << t
-        //   << ", processed_R size: " << processed_R_per_t[t].size()
-        //   << ", prev_pagerank size: " << prev_pagerank.size()
-           << ", damping_t: " << damping_t << "\n";
+        //  std::cout << "Timestep: " << t
+        // //   << ", processed_R size: " << processed_R_per_t[t].size()
+        // //   << ", prev_pagerank size: " << prev_pagerank.size()
+        //    << ", damping_t: " << damping_t << "\n";
 
 
-*/
+
 
 
         
 
 
-        std::cout << "Total_R: " << total_R << std::endl;
+        //std::cout << "Total_R: " << total_R << std::endl;
         // Compute approximate PageRank using all walks up to this timestep
-        //auto pr = approximate_pagerank_from_walks(accumulated_walks, accumulated_nodes.size(), total_R, epsilon);
-        // auto pr = approximate_pagerank_from_walks(processed_R, n, len_R, epsilon);
-        // auto pr1 = MCWalks::MC_EndPoint_RandomStart_FromWalks(processed_R, n, len_R);//
-        // auto pr2 = MCWalks::MC_EndPoint_CyclicStart_FromWalks(processed_R, n, len_R);
-        // auto pr3 = MCWalks::MC_CompletePath_FromWalks(accumulated_walks, accumulated_nodes.size(), total_R);//(processed_R, n, len_R);//
-    
-        // auto pr4 = MCWalks::MC_CompletePath_StopAtDangling_FromWalks(accumulated_walks, accumulated_nodes.size(), total_R);//(processed_R, n, len_R);//
-        // auto pr5 = MCWalks::MC_CompletePath_RandomStart_FromWalks(processed_R, n, len_R);
-        
 
-  //      auto pr_hybrid = HybridMC::hybrid_completepath_poweriteration_from_walks(accumulated_walks, accumulated_graph, damping_t, 1e-6, 20);
+
+        //auto pr_hybrid = HybridMC::hybrid_completepath_poweriteration_from_walks(accumulated_walks, accumulated_graph, damping_t, 1e-6, 20);
         //auto pr_hybrid = HybridMC::hybrid_completepath_poweriteration_from_walks_weighted(decayed_pi, accumulated_graph, damping_t, 1e-6, 20);
         
 
@@ -1135,6 +1135,7 @@ TopKSummaryWithWeights generate_top_k_summary(
         
             // Now run PageRank on accumulated_graph
         //auto oracle = pagerank_power_iteration(accumulated_graph, accumulated_graph.size());
+        //auto oracle = pagerank_power_iteration(weighted_graph, n);
         
             // Store result per timestep
         //   pagerank_per_timestep.push_back(pr);
@@ -1144,7 +1145,7 @@ TopKSummaryWithWeights generate_top_k_summary(
         // if (queries.find(t) != queries.end()) {
         //     for (const auto& [query_id, entity_id] : queries.at(t)) {
         //         accumulated_personalization_set.insert(entity_id);
-        //         //personalization_set.insert(entity_id);
+        //         personalization_set.insert(entity_id);
         //     }
         // }
         //auto personalizedoracle = pagerank_power_iteration(weighted_graph, n, personalization_set);
@@ -1165,12 +1166,13 @@ TopKSummaryWithWeights generate_top_k_summary(
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
 
-
-
-        // Calculate top-k cumulative with weights
+        auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);//(accumulated_walks);//, accumulated_nodes.size(), total_R);//(processed_R, n, len_R);
+        //auto pr = approximate_pagerank_from_walks(accumulated_walks, accumulated_nodes.size(), total_R, epsilon);
+        //auto pr = approximate_pagerank_from_walks(processed_R, n, len_R, epsilon);
+        // Calculate top-k cumulative wi
         //auto top_k_result = calculate_top_k_cumulative_with_weights_oracle(walk, cumCounts, k, t, counters, personalizedoracle, oracle, decay_rate, num_timesteps, n);
-    //    auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr_hybrid, decay_rate, num_timesteps, n);
-        auto top_k_result = calculate_top_k_cumulative_with_weights_(walk, cumCounts, k, t, counters, decay_rate, num_timesteps, n);
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n);
+        //auto top_k_result = calculate_top_k_cumulative_with_weights_(walk, cumCounts, k, t, counters, decay_rate, num_timesteps, n);
         
         
         

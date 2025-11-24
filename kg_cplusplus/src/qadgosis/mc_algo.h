@@ -85,8 +85,8 @@ MC_EndPoint_CyclicStart_FromWalks(
 // ===============================================================
 inline std::unordered_map<int, double>
 MC_CompletePath_FromWalks(
-    const std::unordered_map<int, std::vector<std::vector<std::string>>>& processed_R,
-    int n, int len_R)
+    const std::unordered_map<int, std::vector<std::vector<std::string>>>& processed_R)
+   // int n, int len_R)
 {
     std::unordered_map<int, double> counts;
 
