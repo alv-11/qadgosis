@@ -156,25 +156,6 @@ class SummaryGraph_(KnowledgeGraph):
             self.add_related_random_triples_batch(batch_size=self.batch_size)
 
 
-    # def _precompute_random_candidates(self):
-    #     parent = self.parent().triples_
-    #     reverse_index = self.reverse_index
-
-    #     C = []
-
-    #     # All outgoing edges as triples
-    #     for e1, rels in parent.items():
-    #         for r, nbrs in rels.items():
-    #             for e2 in nbrs:
-    #                 C.append((e1, r, e2))
-
-    #     # All incoming edges as triples 
-    #     # (optional; often redundant if parent is complete)
-    #     for e1, pairs in reverse_index.items():
-    #         for e2, r in pairs:
-    #             C.append((e2, r, e1))
-
-    #     self._random_candidates = C
 
     def _precompute_random_candidates(self):
         parent = self.parent().triples_
@@ -220,39 +201,7 @@ class SummaryGraph_(KnowledgeGraph):
 
 
 
-    # def add_related_random_triples_batch(self, batch_size=100):
-    #     parent_triples = self.parent().triples_
-    #     reverse_idx = self.reverse_index
-    #     top_k = self.top_k_nodes  # set/list
-    #     try_add = self._try_add_triple
-    #     limit_reached = self._limit_reached
 
-    #     remaining = self.max_triples - self.triple_count
-    #     batch_size = min(batch_size, remaining)
-
-    #     # Much faster than repeated random.choice
-    #     choices_e1 = random.choices(tuple(top_k), k=batch_size)
-
-    #     candidates = []
-
-    #     for e1 in choices_e1:
-    #         # Outgoing
-    #         out = parent_triples.get(e1)
-    #         if out:
-    #             r = random.choice(tuple(out.keys()))
-    #             e2 = random.choice(tuple(out[r]))
-    #             candidates.append((e1, r, e2))
-
-    #         # Incoming
-    #         inc = reverse_idx.get(e1)
-    #         if inc:
-    #             e2, r = random.choice(inc)
-    #             candidates.append((e2, r, e1))
-
-    #     for triple in candidates:
-    #         if limit_reached():
-    #             break
-    #         try_add(triple)
 
 
 
@@ -321,6 +270,182 @@ class SummaryGraph_(KnowledgeGraph):
     #         if self._limit_reached():
     #             break
     #         self._try_add_triple(triple)
+
+
+
+
+class SummaryGraph(KnowledgeGraph):
+    def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
+        super().__init__()
+        self.parent_ = KG                    
+        self.top_k_nodes = set(top_k_nodes)  
+        self.max_triples = max_triples
+        self.batch_size = batch_size
+
+        self.triple_count = 0
+        self.triples_set = set()
+
+        # Build initial indexing
+        self.reverse_index = self._build_reverse_index(self.parent_.triples_)
+        self._topk_neighbors = self._compute_topk_neighbors(self.parent_.triples_)
+        self._random_candidates = self._compute_random_candidates()
+
+
+        self._build_summary()
+
+
+    def parent(self):
+        return self.parent_
+
+    def _limit_reached(self):
+        return self.max_triples is not None and self.triple_count >= self.max_triples
+
+
+    def _try_add_triple(self, triple):
+        if triple not in self.triples_set:
+            self.add_triple(triple)
+            self.triples_set.add(triple)
+            self.triple_count += 1
+
+   
+    def _build_reverse_index(self, triples):
+        reverse_idx = {}
+        for s, rels in triples.items():
+            for r, nbrs in rels.items():
+                for o in nbrs:
+                    reverse_idx.setdefault(o, []).append((s, r))
+        return reverse_idx
+
+
+    def _compute_topk_neighbors(self, triples):
+        top_k = self.top_k_nodes
+        rev = self.reverse_index
+
+        res = {}
+        for e1 in top_k:
+            lst = []
+
+            # outgoing
+            if e1 in triples:
+                for r, nbrs in triples[e1].items():
+                    for e2 in nbrs:
+                        if e2 in top_k:
+                            lst.append((e1, r, e2))
+
+            # incoming
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    if e2 in top_k:
+                        lst.append((e2, r, e1))
+
+            res[e1] = lst
+
+        return res
+
+
+    def _compute_random_candidates(self):
+        C = []
+        top_k = self.top_k_nodes
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+
+        # outgoing from top-k
+        for e1 in top_k:
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        C.append((e1, r, e2))
+
+        # incoming into top-k
+        for e1 in top_k:
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    C.append((e2, r, e1))
+
+        return C
+
+    # def _build_summary(self):
+    #     for e1, lst in self._topk_neighbors.items():
+    #         for triple in lst:
+    #             if self._limit_reached():
+    #                 return
+    #             self._try_add_triple(triple)
+
+    #     # padding
+    #     while not self._limit_reached():
+    #         self.add_related_random_triples_batch(self.batch_size)
+
+
+
+    # def add_related_random_triples_batch(self, batch_size=100):
+    #     C = self._random_candidates
+    #     remaining = self.max_triples - self.triple_count
+    #     n = min(batch_size, remaining)
+
+    #     samples = random.choices(C, k=n)
+    #     for t in samples:
+    #         if self._limit_reached():
+    #             break
+    #         self._try_add_triple(t)
+
+
+    def _build_summary(self):
+        # 1. Add all internal top-k edges greedily
+        for e1, lst in self._topk_neighbors.items():
+            for triple in lst:
+                if self._limit_reached():
+                    return
+                self._try_add_triple(triple)
+
+        # 2. Padding with top-k related random edges
+        while not self._limit_reached():
+            added = self.add_related_random_triples_batch(self.batch_size)
+            if not added:
+                break  # candidate pool exhausted
+
+        # 3. Fallback: allow any edge from the parent graph if budget not reached
+        if not self._limit_reached():
+            parent_edges = []
+            triples = self.parent_.triples_
+            for s, rels in triples.items():
+                for r, nbrs in rels.items():
+                    for o in nbrs:
+                        parent_edges.append((s, r, o))
+
+            while not self._limit_reached() and parent_edges:
+                t = random.choice(parent_edges)
+                self._try_add_triple(t)
+
+
+    def add_related_random_triples_batch(self, batch_size=100):
+        """
+        Sample random edges involving top-k nodes for padding.
+        Returns True if at least one triple was added, False otherwise.
+        """
+        C = self._random_candidates
+        if not C:
+            return False  # nothing to sample
+
+        remaining = self.max_triples - self.triple_count
+        n = min(batch_size, remaining)
+
+        added_any = False
+        samples = random.choices(C, k=n)
+        for t in samples:
+            if self._limit_reached():
+                break
+            if t not in self.triples_set:
+                self._try_add_triple(t)
+                added_any = True
+
+        return added_any
+
+
+
+
+
+
+
 
 
 def flatten_list(nested_list):
@@ -432,10 +557,14 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
 
         # -------- SUMMARY + RUNTIME --------
         t0 = time.time()
-        S = SummaryGraph_(KG, top_k_nodes, max_triples,
-                          batch_size=50,
-                          query_freq=qfreq_for_t,
-                          n_priority=n_priority)
+        # S = SummaryGraph_(KG, top_k_nodes, max_triples,
+        #                   batch_size=50,
+        #                   query_freq=qfreq_for_t,
+        #                   n_priority=n_priority)
+
+        S = SummaryGraph(KG, top_k_nodes, max_triples,
+                              batch_size=50)
+
         t1 = time.time()
 
         summary_runtime = t1 - t0
@@ -895,7 +1024,7 @@ def process_snapshots(subgraph_dir):
 def main():
     # Define the subgraph directory
     dynagraph = {}  # Initialize as a dictionary
-    subgraph_dir = "/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30" ## "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
+    subgraph_dir = "/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30" #### "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
  
     # Load and process snapshots
     print("Loading all subgraph snapshots...")
@@ -913,7 +1042,7 @@ def main():
         #print(f"Converting graph at timestep {timestep}...")
         if i == 0:
             # Calculate summary size and K for the first iteration
-            b = 0.05
+            b = 0.1
             summary_size = int(len(graph.edges) * b)  # Adjust the multiplier as needed
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
@@ -965,6 +1094,7 @@ def main():
         test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size, query_freq=queryfreq_, n_priority=50
     )
     sankofa.to_csv("sankofa_results.csv", index=False)
+    print(triples_no)
 
     # sota = process_summary_baselines(
     #     graphs, triples_no, training_data, test_data,
