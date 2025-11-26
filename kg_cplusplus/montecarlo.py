@@ -286,7 +286,8 @@ class SummaryGraph(KnowledgeGraph):
         self.triples_set = set()
 
         # Build initial indexing
-        self.reverse_index = self._build_reverse_index(self.parent_.triples_)
+        #self.reverse_index = self._build_reverse_index(self.parent_.triples_)
+        self.reverse_index = self._build_reverse_index()
         self._topk_neighbors = self._compute_topk_neighbors(self.parent_.triples_)
         self._random_candidates = self._compute_random_candidates()
 
@@ -308,14 +309,23 @@ class SummaryGraph(KnowledgeGraph):
             self.triple_count += 1
 
    
-    def _build_reverse_index(self, triples):
+    # def _build_reverse_index(self, triples):
+    #     reverse_idx = {}
+    #     for s, rels in triples.items():
+    #         for r, nbrs in rels.items():
+    #             for o in nbrs:
+    #                 reverse_idx.setdefault(o, []).append((s, r))
+    #     return reverse_idx
+    def _build_reverse_index(self):
         reverse_idx = {}
-        for s, rels in triples.items():
-            for r, nbrs in rels.items():
-                for o in nbrs:
-                    reverse_idx.setdefault(o, []).append((s, r))
+        top_k = self.top_k_nodes
+        triples = self.parent().triples_
+        for e2, rel_dict in triples.items():
+            for r, neighbors in rel_dict.items():
+                for e1 in neighbors:
+                    if e1 in top_k:
+                        reverse_idx.setdefault(e1, []).append((e2, r))
         return reverse_idx
-
 
     def _compute_topk_neighbors(self, triples):
         top_k = self.top_k_nodes
@@ -441,6 +451,168 @@ class SummaryGraph(KnowledgeGraph):
         return added_any
 
 
+class SummaryGraph__(KnowledgeGraph):
+
+    def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
+        """
+        top_k_nodes : dict {node: importance_score}
+        """
+        super().__init__()
+
+        self.parent_ = KG
+        self.top_k_nodes = top_k_nodes                     
+        self.top_k_set = set(top_k_nodes.keys())         
+        self.max_triples = max_triples
+        self.batch_size = batch_size
+
+        self.triple_count = 0
+        self.triples_set = set()
+
+        # Build indexing
+        self.reverse_index = self._build_reverse_index_topk_only()
+        self._topk_neighbors = self._compute_topk_internal_triples()
+        self._random_candidates = self._compute_random_candidates_weighted()
+
+        self._build_summary()
+
+
+    def parent(self):
+        return self.parent_
+
+    def _limit_reached(self):
+        return self.max_triples is not None and self.triple_count >= self.max_triples
+
+    def _try_add_triple(self, triple):
+        if triple not in self.triples_set:
+            self.add_triple(triple)
+            self.triples_set.add(triple)
+            self.triple_count += 1
+
+
+
+    def _build_reverse_index_topk_only(self):
+        reverse_idx = {}
+        parent = self.parent_.triples_
+        top_k = self.top_k_set
+
+        for s, rel_dict in parent.items():
+            for r, nbrs in rel_dict.items():
+                for o in nbrs:
+                    if o in top_k:
+                        reverse_idx.setdefault(o, []).append((s, r))
+
+        return reverse_idx
+
+
+
+    def _compute_topk_internal_triples(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        top_k = self.top_k_set
+        scores = self.top_k_nodes     # <-- direct scoring source
+
+        scored_triples = []
+
+        for e1 in top_k:
+
+            # outgoing
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        if e2 in top_k:
+                            score = scores[e1] + scores[e2]
+                            scored_triples.append((score, (e1, r, e2)))
+
+            # incoming
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    if e2 in top_k:
+                        score = scores[e1] + scores[e2]
+                        scored_triples.append((score, (e2, r, e1)))
+
+        scored_triples.sort(key=lambda x: x[0], reverse=True)
+        return scored_triples
+
+
+
+    def _compute_random_candidates_weighted(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        top_k = self.top_k_set
+        scores = self.top_k_nodes
+
+        candidates = []
+        weights = []
+
+        for e1 in top_k:
+
+            # outgoing
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        w = scores[e1] + scores.get(e2, 0.0)
+                        candidates.append((e1, r, e2))
+                        weights.append(w)
+
+            # incoming
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    w = scores[e1] + scores.get(e2, 0.0)
+                    candidates.append((e2, r, e1))
+                    weights.append(w)
+
+        return candidates, weights
+
+
+    def _build_summary(self):
+
+        # Greedy internal triples (importance-sorted)
+        for score, triple in self._topk_neighbors:
+            if self._limit_reached():
+                break
+            self._try_add_triple(triple)
+
+        # Weighted random padding
+        while not self._limit_reached():
+            added = self.add_related_random_triples_batch(self.batch_size)
+            if not added:
+                break
+
+        # 3. Fallback: allow any edge from the parent graph if budget not reached
+        if not self._limit_reached():
+            parent_edges = []
+            triples = self.parent_.triples_
+            for s, rels in triples.items():
+                for r, nbrs in rels.items():
+                    for o in nbrs:
+                        parent_edges.append((s, r, o))
+
+            while not self._limit_reached() and parent_edges:
+                t = random.choice(parent_edges)
+                self._try_add_triple(t)
+
+
+    def add_related_random_triples_batch(self, batch_size=100):
+        candidates, weights = self._random_candidates
+
+        if not candidates:
+            return False
+
+        remaining = self.max_triples - self.triple_count
+        k = min(batch_size, remaining)
+
+        sampled = random.choices(candidates, weights=weights, k=k)
+
+        added = False
+        for t in sampled:
+            if self._limit_reached():
+                break
+            if t not in self.triples_set:
+                self._try_add_triple(t)
+                added = True
+
+        return added
+
 
 
 
@@ -551,6 +723,7 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
 
         KG = graphs[key]
         top_k_nodes = {str(n): v for n, v in top_k_nodes_dict[key].items()}
+        #print(top_k_nodes)
         qfreq_for_t = query_freq.get(key, {})
 
         print(f"{len(top_k_nodes)} top_k nodes for timestep {key}")
@@ -562,7 +735,7 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
         #                   query_freq=qfreq_for_t,
         #                   n_priority=n_priority)
 
-        S = SummaryGraph(KG, top_k_nodes, max_triples,
+        S = SummaryGraph__(KG, top_k_nodes, max_triples,
                               batch_size=50)
 
         t1 = time.time()
@@ -1024,7 +1197,7 @@ def process_snapshots(subgraph_dir):
 def main():
     # Define the subgraph directory
     dynagraph = {}  # Initialize as a dictionary
-    subgraph_dir = "/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30" #### "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
+    subgraph_dir = "/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30" # "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
  
     # Load and process snapshots
     print("Loading all subgraph snapshots...")
@@ -1042,7 +1215,7 @@ def main():
         #print(f"Converting graph at timestep {timestep}...")
         if i == 0:
             # Calculate summary size and K for the first iteration
-            b = 0.1
+            b = 0.01
             summary_size = int(len(graph.edges) * b)  # Adjust the multiplier as needed
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
