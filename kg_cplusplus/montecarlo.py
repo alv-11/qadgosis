@@ -453,7 +453,7 @@ class SummaryGraph(KnowledgeGraph):
 
 class SummaryGraph__(KnowledgeGraph):
 
-    def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
+    def __init__(self, KG, top_k_nodes, global_pr,max_triples=None, batch_size=10):
         """
         top_k_nodes : dict {node: importance_score}
         """
@@ -464,6 +464,8 @@ class SummaryGraph__(KnowledgeGraph):
         self.top_k_set = set(top_k_nodes.keys())         
         self.max_triples = max_triples
         self.batch_size = batch_size
+        self.global_pr = global_pr
+        self.global_pr_set = set(global_pr.keys())
 
         self.triple_count = 0
         self.triples_set = set()
@@ -589,9 +591,12 @@ class SummaryGraph__(KnowledgeGraph):
         rev = self.reverse_index
         top_k = self.top_k_set
         scores = self.top_k_nodes
+        global_pr = self.global_pr_set
+        global_score = self.global_pr
 
         candidates = []
         weights = []
+        boundary_triples = []
 
         for e1 in top_k:
 
@@ -602,6 +607,7 @@ class SummaryGraph__(KnowledgeGraph):
                         w = scores[e1] + scores.get(e2, 0.0)
                         candidates.append((e1, r, e2))
                         weights.append(w)
+                        boundary_triples.append((w, (e1, r, e2)))
 
             # incoming
             if e1 in rev:
@@ -609,8 +615,9 @@ class SummaryGraph__(KnowledgeGraph):
                     w = scores[e1] + scores.get(e2, 0.0)
                     candidates.append((e2, r, e1))
                     weights.append(w)
+                    boundary_triples.append((w, (e1, r, e2)))
 
-        return candidates, weights
+        return candidates, weights#sorted(boundary_triples, key=lambda x: x[0], reverse=True)#
 
 
     def _build_summary(self):
@@ -626,6 +633,10 @@ class SummaryGraph__(KnowledgeGraph):
             added = self.add_related_random_triples_batch(self.batch_size)
             if not added:
                 break
+        # for score, triple in self._random_candidates:
+        #     if self._limit_reached():
+        #         break
+        #     self._try_add_triple(triple)
 
         # 3. Fallback: allow any edge from the parent graph if budget not reached
         if not self._limit_reached():
@@ -661,6 +672,27 @@ class SummaryGraph__(KnowledgeGraph):
                 added = True
 
         return added
+    
+    # def add_related_random_triples_batch(self, batch_size=100):
+    #     candidates, weights = self._random_candidates
+
+    #     if not candidates:
+    #         return False
+
+    #     remaining = self.max_triples - self.triple_count
+    #     k = min(batch_size, remaining)
+
+    #     sampled = random.choices(candidates, weights=weights, k=k)
+
+    #     added = False
+    #     for t in sampled:
+    #         if self._limit_reached():
+    #             break
+    #         if t not in self.triples_set:
+    #             self._try_add_triple(t)
+    #             added = True
+
+    #     return added
 
 
 
@@ -749,7 +781,7 @@ def _safe_concat_df(list_of_dfs, rename_from="Timestep Window", rename_to="Times
 
 
 
-def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
+def process_summary_sankofa(top_k_nodes_dict, global_pr_dict, graphs, label, weights, test_data,
                             walks_runtime=None, max_triples=None, query_freq=None, n_priority=None):
     """
     Fully restored Sankofa processing:
@@ -772,7 +804,8 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
 
         KG = graphs[key]
         top_k_nodes = {str(n): v for n, v in top_k_nodes_dict[key].items()}
-        #print(top_k_nodes)
+        global_pr = {str(n): v for n, v in global_pr_dict[key].items()}
+        #print(global_pr)
         qfreq_for_t = query_freq.get(key, {})
 
         print(f"{len(top_k_nodes)} top_k nodes for timestep {key}")
@@ -784,7 +817,7 @@ def process_summary_sankofa(top_k_nodes_dict, graphs, label, weights, test_data,
         #                   query_freq=qfreq_for_t,
         #                   n_priority=n_priority)
 
-        S = SummaryGraph__(KG, top_k_nodes, max_triples,
+        S = SummaryGraph__(KG, top_k_nodes, global_pr, max_triples,
                               batch_size=50)
 
         t1 = time.time()
@@ -1264,7 +1297,7 @@ def main():
         #print(f"Converting graph at timestep {timestep}...")
         if i == 0:
             # Calculate summary size and K for the first iteration
-            b = 0.1
+            b = 0.0005
             summary_size = int(len(graph.edges) * b)  # Adjust the multiplier as needed
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
@@ -1305,6 +1338,7 @@ def main():
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
     weights = results["all_weights"]
     runtime_per_timestep = results["runtime_per_timestep"]
+    global_pr = results["global_pr"]
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
@@ -1312,19 +1346,19 @@ def main():
 
     #print("Processing summaries...")
     triples_no, sankofa = process_summary_sankofa(
-        top_k_cumsum_walks, graphs, label="Cumsum Walks", weights=weights,
+        top_k_cumsum_walks, global_pr, graphs, label="Cumsum Walks", weights=weights,
         test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size, query_freq=queryfreq_, n_priority=50
     )
     sankofa.to_csv("sankofa_results.csv", index=False)
     print(triples_no)
 
-    sota = process_summary_baselines(
-        graphs, triples_no, training_data, test_data,
-        methods=["glimpse"]#, "apex", "isummary"]
-        , weights=weights
-    )
-    merged_df = pd.merge(sankofa, sota, on="Timestep")
-    merged_df.to_csv("all_results.csv", index=False)
+    # sota = process_summary_baselines(
+    #     graphs, triples_no, training_data, test_data,
+    #     methods=["glimpse"]#, "apex", "isummary"]
+    #     , weights=weights
+    # )
+    # merged_df = pd.merge(sankofa, sota, on="Timestep")
+    # merged_df.to_csv("all_results.csv", index=False)
 
 if __name__ == "__main__":
     main()

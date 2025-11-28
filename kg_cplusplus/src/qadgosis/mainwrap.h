@@ -25,6 +25,7 @@ struct TopKSummary {
     std::unordered_map<int, RandomWalkResult> random_walks;
     std::unordered_map<int, std::vector<int>> ppr_walks;
     std::unordered_map<int, std::unordered_map<int, double>> top_k_cumsum_walks;
+    std::unordered_map<int, std::unordered_map<int, double>> global_pr;
 };
 
 // Structure to hold both the summary, weights, and runtime.
@@ -55,3 +56,11 @@ std::vector<int> compute_personalized_pagerank(
 );
 
 #endif
+
+using Map = std::unordered_map<int, double>;
+
+struct TopKResult {
+    Map top_k;
+    Map individual_weights;
+    Map pi_v;
+};

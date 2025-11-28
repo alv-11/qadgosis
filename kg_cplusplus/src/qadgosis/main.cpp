@@ -655,7 +655,7 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
 
 
 
-std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_new(
+TopKResult calculate_top_k_cumulative_with_weights_new(
     const std::vector<int>& walk,
     std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
     int k,
@@ -822,8 +822,15 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
     //     }
     // }
 
+
+    TopKResult result;
+
     // Return top-k nodes and the timestep weights (for debugging/analysis)
-    return {top_k, individual_weights};
+    result.top_k = std::move(top_k);
+    result.individual_weights = std::move(individual_weights);
+    result.pi_v = pi_v;
+    return result;
+    //return {top_k, individual_weights, pi_v};
 }
 
 
@@ -1358,10 +1365,19 @@ TopKSummaryWithWeights generate_top_k_summary(
         
         
         
-        auto top_k = top_k_result.first;
-        weights[t] = top_k_result.second; // Store weights for the current timestep
+        // auto top_k = top_k_result.first;
+        // weights[t] = top_k_result.second; // Store weights for the current timestep
+        // std::tuple< Map, Map, Map > top_k_result;
+        // auto global_pr = std::get<2>(top_k_result);
 
-        summary.top_k_cumsum_walks[t] = top_k;
+
+
+        //auto global_pr = top_k_result.third; // Store global π(v) for next timestep
+ 
+
+        summary.top_k_cumsum_walks[t] = top_k_result.top_k;
+        summary.global_pr[t] = top_k_result.pi_v;
+        weights[t] = top_k_result.individual_weights; // Store weights for the current timestep
 
         auto time_end = chrono::high_resolution_clock::now();
         chrono::duration<double> elapsed_topk = time_end - time_start;
@@ -1430,6 +1446,7 @@ TopKSummary summary = result.summary;
 std::unordered_map<int, std::unordered_map<int, double>> weights = result.weights;
 std::unordered_map<int, double> runtime_per_timestep = result.runtime_per_timestep;
 
+
 // Prepare a Python dictionary to hold the results.
 py::dict result_dict;
 
@@ -1475,6 +1492,17 @@ inner[py::int_(p.first)] = p.second;
 top_k_cumsum_walks[py::int_(entry.first)] = inner;
 }
 result_dict["top_k_cumsum_walks"] = top_k_cumsum_walks;
+
+
+py::dict global_pr;
+for (const auto &entry : summary.global_pr) {
+py::dict inner;
+for (const auto &p : entry.second) {
+inner[py::int_(p.first)] = p.second;
+}
+global_pr[py::int_(entry.first)] = inner;
+}
+result_dict["global_pr"] = global_pr;
 
 // Convert weights (unordered_map<int, unordered_map<int, double>>)
 py::dict all_weights;
