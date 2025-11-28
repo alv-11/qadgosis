@@ -632,15 +632,7 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
         top_k[node] = weighted_scores[i].second;
         selected.insert(node);
     }
-
-    //Pad if fewer than k nodes
-    for (const auto& [node, _] : cumulative_counts) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = 0.0;
-        }
-    }
-
+    // 6. Final padding from cumulative_counts keys if still needed
     double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
 
     for (const auto& [node, _] : cumulative_counts) {
@@ -660,6 +652,195 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
     // Return top-k nodes and the timestep weights (for debugging/analysis)
     return {top_k, individual_weights};
 }
+
+
+
+std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_new(
+    const std::vector<int>& walk,
+    std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
+    int k,
+    int timestep,
+    std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
+    std::unordered_map<int, double> & pi_v, // global popularity (π(v))
+    double decay_rate = 0.38,
+    int window_size = 5,
+    int n = 0,             // total number of nodes,
+    int c = 2
+    
+
+    ) {
+    // 1. Count queries for current timestep
+    for (int node : walk) {
+        counters[timestep][node]++;
+    }
+
+    // 2. Collect relevant timesteps (sliding window)
+    std::vector<int> keys;
+    for (const auto& entry : counters) keys.push_back(entry.first);
+    std::sort(keys.begin(), keys.end());
+    int latest_timestep = keys.back();
+    int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
+    std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
+
+    // 3. Apply decay
+    std::unordered_map<int, double> decayed_counts;
+    std::unordered_map<int, double> individual_weights;
+    for (int j : relevant_timesteps) {
+        double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
+        //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
+        individual_weights[j] = weight;
+
+        for (const auto& [node, count] : counters[j]) {
+            decayed_counts[node] += count * weight;
+        }
+    }
+
+    // // 4. Update cumulative counts
+    for (const auto& [node, decayed_count] : decayed_counts) {
+        cumulative_counts[node] += decayed_count;
+    }
+
+    // // ------------------------------------------------------------------
+    // // NEW: Properly compute π(u), π(u,v), π(v), and w(u,v)
+    // // ------------------------------------------------------------------
+
+    // // Step A: π(u) = normalized count of this timestep
+    // std::unordered_map<int, double> pi_u; // per timestep
+    // int total_bigwalk = 0;
+    // for (const auto& [node, count] : counters[timestep]) {
+    //     total_bigwalk += count;
+    // }
+
+    // for (const auto& [node, count] : counters[timestep]) {
+    //     pi_u[node] = (total_bigwalk > 0) ? (static_cast<double>(count) / total_bigwalk) : 0.0;
+    // }
+
+    // Step A: π(u) = normalized count of this timestep, but ONLY for reliable nodes
+    // std::unordered_map<int, double> pi_u; 
+    // int total_bigwalk = 0;
+
+    // // 1) First compute total_bigwalk using ONLY nodes with count >= c
+    // for (const auto& [node, count] : counters[timestep]) {
+    //     if (count >= c) {
+    //         total_bigwalk += count;
+    //     }
+    // }
+
+//     // 2) Compute π(u) ONLY for nodes with count >= c
+//     for (const auto& [node, count] : counters[timestep]) {
+//         if (count >= c) {
+//             pi_u[node] = static_cast<double>(count) / total_bigwalk;
+//         }
+// }
+
+
+
+//    # Step B: π(u,v) approximated by cumulative counts normalized
+//     std::unordered_map<int, double> pi_uv;
+//     //double total_cumulative = 0.0;
+//     for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
+//     for (const auto& [node, value] : cumulative_counts) {
+//         pi_uv[node] = value;//(total_cumulative > 0) ? (value / total_cumulative) : 0.0;
+//     }
+
+    std::unordered_map<int, double> pi_uv_raw;
+    std::unordered_map<int, double> pi_uv_norm;
+
+    // 1. FILTER FIRST — keep only nodes with raw count >= c
+    for (const auto& [node, value] : cumulative_counts) {
+        if (value >= c) {
+            pi_uv_raw[node] = value;  // store raw filtered count
+        }
+    }
+
+    // 2. COMPUTE NORMALIZATION CONSTANT *only over filtered nodes*
+    double total_filtered = 0.0;
+    for (const auto& [node, value] : pi_uv_raw) {
+        total_filtered += value;
+    }
+
+    // 3. NORMALIZE
+    for (const auto& [node, value] : pi_uv_raw) {
+        pi_uv_norm[node] = (total_filtered > 0) ? (value / total_filtered) : 0.0;
+    }
+
+    
+    //double fallback = 0;  // negligible, avoids exact zero
+    std::vector<std::pair<int, double>> weighted_scores;
+    for (const auto& [node, val] : cumulative_counts) {
+        //double pu = pi_u[node];       // local importance
+        double puv = pi_uv_norm[node];     // co-occurrence weight
+        double pv = pi_v[node];       // global popularity
+
+        // //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
+        //double puv = (pi_uv_norm.find(node) != pi_uv_norm.end()) ? pi_uv_norm.at(node) : fallback;
+        // double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
+
+        // //double weight = pu * puv * pv;
+        //double weight = puv * pv; // omit pu for now
+        double alpha = 0.25;
+        double weight = (1.0 - alpha) * puv + alpha * pv;
+        //double weight = pi_uv_norm[node] ;
+        weighted_scores.emplace_back(node, weight);
+
+
+
+    }
+    
+    // Sort nodes by weight
+    std::sort(weighted_scores.begin(), weighted_scores.end(), 
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // 5. Select top-k nodes
+    std::unordered_map<int, double> top_k;
+    std::unordered_set<int> selected;
+
+    for (int i = 0; i < static_cast<int>(weighted_scores.size()); //&& top_k.size() < static_cast<size_t>(k)
+     ++i) {
+        int node = weighted_scores[i].first;
+
+        // Skip if node ID starts with "12345"
+        if (std::to_string(node).rfind("12345", 0) == 0) continue;
+
+        top_k[node] = weighted_scores[i].second;
+        selected.insert(node);
+    }
+    // // 6. Final padding from cumulative_counts keys if still needed
+    // double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
+
+    // for (const auto& [node, _] : cumulative_counts) {
+    //     if (top_k.size() >= static_cast<size_t>(k)) break;
+    //     if (selected.insert(node).second) {
+    //         top_k[node] = min_score;  // instead of 0.0
+    //     }
+    // }
+    
+    // for (int node : walk) {
+    //     if (top_k.size() >= static_cast<size_t>(k)) break;
+    //     if (selected.insert(node).second) {
+    //         top_k[node] = 0.0;
+    //     }
+    // }
+
+    // Return top-k nodes and the timestep weights (for debugging/analysis)
+    return {top_k, individual_weights};
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_oracle(
@@ -1171,7 +1352,8 @@ TopKSummaryWithWeights generate_top_k_summary(
         //auto pr = approximate_pagerank_from_walks(processed_R, n, len_R, epsilon);
         // Calculate top-k cumulative wi
         //auto top_k_result = calculate_top_k_cumulative_with_weights_oracle(walk, cumCounts, k, t, counters, personalizedoracle, oracle, decay_rate, num_timesteps, n);
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n);
+        auto top_k_result = calculate_top_k_cumulative_with_weights_new(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c);
+        //auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n);
         //auto top_k_result = calculate_top_k_cumulative_with_weights_(walk, cumCounts, k, t, counters, decay_rate, num_timesteps, n);
         
         

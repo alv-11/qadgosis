@@ -505,33 +505,82 @@ class SummaryGraph__(KnowledgeGraph):
 
 
 
+    # def _compute_topk_internal_triples(self):
+    #     parent = self.parent_.triples_
+    #     rev = self.reverse_index
+    #     top_k = self.top_k_set
+    #     scores = self.top_k_nodes     # <-- direct scoring source
+
+    #     scored_triples = []
+
+    #     for e1 in top_k:
+
+    #         # outgoing
+    #         if e1 in parent:
+    #             for r, nbrs in parent[e1].items():
+    #                 for e2 in nbrs:
+    #                     if e2 in top_k:
+    #                         score = scores[e1] + scores[e2]
+    #                         scored_triples.append((score, (e1, r, e2)))
+
+    #         # incoming
+    #         if e1 in rev:
+    #             for e2, r in rev[e1]:
+    #                 if e2 in top_k:
+    #                     score = scores[e1] + scores[e2]
+    #                     scored_triples.append((score, (e2, r, e1)))
+
+    #     scored_triples.sort(key=lambda x: x[0], reverse=True)
+    #     return scored_triples
+    
+
+
     def _compute_topk_internal_triples(self):
         parent = self.parent_.triples_
         rev = self.reverse_index
-        top_k = self.top_k_set
-        scores = self.top_k_nodes     # <-- direct scoring source
+        top_k_nodes = self.top_k_set
+        scores = self.top_k_nodes        # scoring dictionary
+        budget = self.max_triples               # total number of triples allowed
 
-        scored_triples = []
+        internal_triples = []            # raw list without scoring
 
-        for e1 in top_k:
+        # ---------------------------------------------------------
+        # 1. COLLECT all internal triples unscored
+        # ---------------------------------------------------------
+        for e1 in top_k_nodes:
 
-            # outgoing
+            # outgoing edges
             if e1 in parent:
                 for r, nbrs in parent[e1].items():
                     for e2 in nbrs:
-                        if e2 in top_k:
-                            score = scores[e1] + scores[e2]
-                            scored_triples.append((score, (e1, r, e2)))
+                        if e2 in top_k_nodes:
+                            internal_triples.append((e1, r, e2))
 
-            # incoming
+            # incoming edges
             if e1 in rev:
                 for e2, r in rev[e1]:
-                    if e2 in top_k:
-                        score = scores[e1] + scores[e2]
-                        scored_triples.append((score, (e2, r, e1)))
+                    if e2 in top_k_nodes:
+                        internal_triples.append((e2, r, e1))
+
+        # ---------------------------------------------------------
+        # 2. If internal triples < budget → just return them all
+        #    (NO scoring required)
+        # ---------------------------------------------------------
+        if len(internal_triples) <= budget:
+            # wrap them in dummy score format expected downstream:
+            return [(0.0, triple) for triple in internal_triples]
+
+        # ---------------------------------------------------------
+        # 3. Otherwise: score each triple and return top ones
+        # ---------------------------------------------------------
+        scored_triples = []
+        for (e1, r, e2) in internal_triples:
+            score = scores[e1] + scores[e2]
+            scored_triples.append((score, (e1, r, e2)))
 
         scored_triples.sort(key=lambda x: x[0], reverse=True)
         return scored_triples
+
 
 
 
@@ -1197,7 +1246,7 @@ def process_snapshots(subgraph_dir):
 def main():
     # Define the subgraph directory
     dynagraph = {}  # Initialize as a dictionary
-    subgraph_dir = "/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30" # "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
+    subgraph_dir =  "/Users/au735195/Desktop/dbp"# "/Users/au735195/Downloads/KG_IMDB30""../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
  
     # Load and process snapshots
     print("Loading all subgraph snapshots...")
@@ -1215,11 +1264,11 @@ def main():
         #print(f"Converting graph at timestep {timestep}...")
         if i == 0:
             # Calculate summary size and K for the first iteration
-            b = 0.01
+            b = 0.1
             summary_size = int(len(graph.edges) * b)  # Adjust the multiplier as needed
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
-            #print(f"Summary size: {summary_size}, K: {K}, k1: {k1}")
+            print(f"Summary size: {summary_size}, K: {K}, k1: {k1}, DENSITY: {len(graph.edges)/ (len(graph.nodes)*(len(graph.nodes)-1))}")
 
         # Convert the graph to the required format
         converted_graph = {
@@ -1245,7 +1294,7 @@ def main():
         num_walks=5,
         dynamic_graph=converted_dynagraph,
         queries=converted_queries,
-        c=5,
+        c=2,
         epsilon=0.25,
         k=K,
         decay_rate=0.8
@@ -1269,12 +1318,13 @@ def main():
     sankofa.to_csv("sankofa_results.csv", index=False)
     print(triples_no)
 
-    # sota = process_summary_baselines(
-    #     graphs, triples_no, training_data, test_data,
-    #     methods=["glimpse", "apex", "isummary"], weights=weights
-    # )
-    # merged_df = pd.merge(sankofa, sota, on="Timestep")
-    # merged_df.to_csv("all_results.csv", index=False)
+    sota = process_summary_baselines(
+        graphs, triples_no, training_data, test_data,
+        methods=["glimpse"]#, "apex", "isummary"]
+        , weights=weights
+    )
+    merged_df = pd.merge(sankofa, sota, on="Timestep")
+    merged_df.to_csv("all_results.csv", index=False)
 
 if __name__ == "__main__":
     main()
