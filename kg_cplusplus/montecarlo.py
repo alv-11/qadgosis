@@ -51,6 +51,217 @@ METHODS = {
 }
 
 
+import random
+import math
+
+def weighted_permutation(candidates, weights):
+    """
+    Weighted sampling WITHOUT replacement using
+    the Efraimidis–Spirakis priority algorithm.
+    Output: a list of triples ordered by decreasing priority.
+    """
+    keyed = []
+    for t, w in zip(candidates, weights):
+        u = random.random()
+        w = max(w, 1e-12)     # avoid 1/0
+        key = u ** (1.0 / w)  # priority key
+        keyed.append((key, t))
+
+    keyed.sort(reverse=True, key=lambda x: x[0])
+    return [t for _, t in keyed]
+
+
+
+class _SummaryGraph_(KnowledgeGraph):
+
+    def __init__(self, KG, top_k_nodes, global_pr, max_triples=None, batch_size=10):
+        super().__init__()
+
+        self.parent_ = KG
+        self.top_k_nodes = top_k_nodes
+        self.top_k_set = set(top_k_nodes.keys())
+        self.max_triples = max_triples
+        self.batch_size = batch_size
+        self.global_pr = global_pr
+        self.global_pr_set = set(global_pr.keys())
+
+        self.triple_count = 0
+        self.triples_set = set()
+
+        # Build indexing
+        self.reverse_index = self._build_reverse_index_topk_only()
+
+        # Internal triples
+        self._topk_neighbors = self._compute_topk_internal_triples()
+
+        # Boundary candidates
+        cand, w = self._compute_random_candidates_weighted()
+
+        # NEW: weighted sampling WITHOUT replacement
+        self.random_padding_order = weighted_permutation(cand, w)
+        self.random_padding_index = 0
+
+        # Build summary
+        self._build_summary()
+
+
+
+    def parent(self):
+        return self.parent_
+
+    def _limit_reached(self):
+        return self.max_triples is not None and self.triple_count >= self.max_triples
+
+
+
+    def _try_add_triple(self, triple):
+        if triple not in self.triples_set:
+            self.add_triple(triple)
+            self.triples_set.add(triple)
+            self.triple_count += 1
+
+
+
+    def _build_reverse_index_topk_only(self):
+        reverse_idx = {}
+        parent = self.parent_.triples_
+        top_k = self.top_k_set
+
+        for s, rel_dict in parent.items():
+            for r, nbrs in rel_dict.items():
+                for o in nbrs:
+                    if o in top_k:
+                        reverse_idx.setdefault(o, []).append((s, r))
+
+        return reverse_idx
+
+
+
+    def _compute_topk_internal_triples(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        top_k_nodes = self.top_k_set
+        scores = self.top_k_nodes
+        budget = self.max_triples
+
+        internal = []
+
+        # Collect
+        for e1 in top_k_nodes:
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        if e2 in top_k_nodes:
+                            internal.append((e1, r, e2))
+
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    if e2 in top_k_nodes:
+                        internal.append((e2, r, e1))
+
+        # If small, return all
+        if len(internal) <= budget:
+            return [(0.0, t) for t in internal]
+
+        # Else score
+        scored = []
+        for (e1, r, e2) in internal:
+            score = scores[e1] + scores[e2]
+            scored.append((score, (e1, r, e2)))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
+
+
+
+    def _compute_random_candidates_weighted(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        top_k = self.top_k_set
+        scores = self.top_k_nodes
+
+        candidates = []
+        weights = []
+
+        for e1 in top_k:
+
+            # Outgoing
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        w = scores[e1] + scores.get(e2, 0.0)
+                        candidates.append((e1, r, e2))
+                        weights.append(w)
+
+            # Incoming
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    w = scores[e1] + scores.get(e2, 0.0)
+                    candidates.append((e2, r, e1))
+                    weights.append(w)
+
+        return candidates, weights
+
+
+
+    def _build_summary(self):
+
+        # 1. Internal triples
+        for score, triple in self._topk_neighbors:
+            if self._limit_reached():
+                break
+            self._try_add_triple(triple)
+
+        # 2. NEW C_bnd sampling: batches from a weighted permutation
+        while not self._limit_reached():
+            added = self.add_related_random_triples_batch(self.batch_size)
+            if not added:
+                break
+
+        # 3. Fallback: any triple
+        if not self._limit_reached():
+            parent_edges = []
+            triples = self.parent_.triples_
+            for s, rels in triples.items():
+                for r, nbrs in rels.items():
+                    for o in nbrs:
+                        parent_edges.append((s, r, o))
+
+            while not self._limit_reached() and parent_edges:
+                t = random.choice(parent_edges)
+                self._try_add_triple(t)
+
+
+
+    def add_related_random_triples_batch(self, batch_size=100):
+        order = self.random_padding_order
+        idx = self.random_padding_index
+        n = len(order)
+
+        if idx >= n:
+            return False
+
+        remaining = self.max_triples - self.triple_count
+        k = min(batch_size, remaining)
+
+        end = min(idx + k, n)
+        batch = order[idx:end]
+
+        added = False
+        for triple in batch:
+            if self._limit_reached():
+                break
+            if triple not in self.triples_set:
+                self._try_add_triple(triple)
+                added = True
+
+        self.random_padding_index = end
+        return added
+
+
+
+
+
 
 
 
@@ -672,27 +883,7 @@ class SummaryGraph__(KnowledgeGraph):
                 added = True
 
         return added
-    
-    # def add_related_random_triples_batch(self, batch_size=100):
-    #     candidates, weights = self._random_candidates
 
-    #     if not candidates:
-    #         return False
-
-    #     remaining = self.max_triples - self.triple_count
-    #     k = min(batch_size, remaining)
-
-    #     sampled = random.choices(candidates, weights=weights, k=k)
-
-    #     added = False
-    #     for t in sampled:
-    #         if self._limit_reached():
-    #             break
-    #         if t not in self.triples_set:
-    #             self._try_add_triple(t)
-    #             added = True
-
-    #     return added
 
 
 
@@ -817,7 +1008,7 @@ def process_summary_sankofa(top_k_nodes_dict, global_pr_dict, graphs, label, wei
         #                   query_freq=qfreq_for_t,
         #                   n_priority=n_priority)
 
-        S = SummaryGraph__(KG, top_k_nodes, global_pr, max_triples,
+        S = _SummaryGraph_(KG, top_k_nodes, global_pr, max_triples,
                               batch_size=50)
 
         t1 = time.time()
@@ -1003,20 +1194,20 @@ def run_apex(graphs, triples_no_mc, training_data, test_data, weights):
         K = triples_no_mc[t]
         test_w = weights[t]  # APEX part of your code used raw weights for process_all_timesteps
 
-        if t == 0:
-            P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
-        else:
-            try:
-                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
-                    KG, K, training_data[t], test_data[t],
-                    t=t, H=H, q=q, e=e, r=r,
-                    csr_indirect_matrices=csr, index_list=index_list
-                )
-            except Exception:
-                pass
+        # if t == 0:
+        #     P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
+        # else:
+        #     try:
+        #         P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+        #             KG, K, training_data[t], test_data[t],
+        #             t=t, H=H, q=q, e=e, r=r,
+        #             csr_indirect_matrices=csr, index_list=index_list
+        #         )
+        #     except Exception:
+        #         pass
                 # fallback to full call if incremental fails
                 #P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
-        #total_F1, run_time, P = APEX_(KG, K,  training_data[t], test_data[t], t=t)
+        total_F1, run_time, P = APEX_(KG, K,  training_data[t], test_data[t], t=t)
 
         apex_rows.append({"Timestep": t, "Apex Present F1": total_F1, "Runtime (seconds)": run_time})
         df_w = process_all_timesteps(training_set=test_data, summary=P, i=t, test_weights=_normalize_weights(test_w))
@@ -1279,7 +1470,7 @@ def process_snapshots(subgraph_dir):
 def main():
     # Define the subgraph directory
     dynagraph = {}  # Initialize as a dictionary
-    subgraph_dir =  "/Users/au735195/Desktop/dbp"# "/Users/au735195/Downloads/KG_IMDB30""../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #"
+    subgraph_dir ='/home/ama/dbp'#"/Users/au735195/Desktop/dbp"# "/Users/au735195/Downloads/KG_IMDB30"#"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #" "/Users/au735195/Downloads/KG_snapshots"#
  
     # Load and process snapshots
     print("Loading all subgraph snapshots...")
@@ -1297,7 +1488,7 @@ def main():
         #print(f"Converting graph at timestep {timestep}...")
         if i == 0:
             # Calculate summary size and K for the first iteration
-            b = 0.0005
+            b = 0.1
             summary_size = int(len(graph.edges) * b)  # Adjust the multiplier as needed
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
@@ -1354,7 +1545,7 @@ def main():
 
     # sota = process_summary_baselines(
     #     graphs, triples_no, training_data, test_data,
-    #     methods=["glimpse"]#, "apex", "isummary"]
+    #     methods=["glimpse", "apex", "isummary"]
     #     , weights=weights
     # )
     # merged_df = pd.merge(sankofa, sota, on="Timestep")
