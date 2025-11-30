@@ -54,21 +54,73 @@ METHODS = {
 import random
 import math
 
+# def weighted_permutation(candidates, weights):
+#     """
+#     Weighted sampling WITHOUT replacement using
+#     the Efraimidis–Spirakis priority algorithm.
+#     Output: a list of triples ordered by decreasing priority.
+#     """
+#     keyed = []
+#     for t, w in zip(candidates, weights):
+#         u = random.random()
+#         w = max(w, 1e-12)     # avoid 1/0
+#         key = u ** (1.0 / w)  # priority key
+#         keyed.append((key, t))
+
+#     keyed.sort(reverse=True, key=lambda x: x[0])
+#     return [t for _, t in keyed]
+
+
+import random, math
+
 def weighted_permutation(candidates, weights):
-    """
-    Weighted sampling WITHOUT replacement using
-    the Efraimidis–Spirakis priority algorithm.
-    Output: a list of triples ordered by decreasing priority.
-    """
     keyed = []
     for t, w in zip(candidates, weights):
+        if w <= 0:
+            continue  # drop zero weight candidates
         u = random.random()
-        w = max(w, 1e-12)     # avoid 1/0
-        key = u ** (1.0 / w)  # priority key
+        key = -math.log(u) / w    # stable
         keyed.append((key, t))
-
-    keyed.sort(reverse=True, key=lambda x: x[0])
+    keyed.sort(key=lambda x: x[0])   # ascending
     return [t for _, t in keyed]
+
+
+# def weighted_topk(items, weights, k):
+#     keys = []
+#     for item, w in zip(items, weights):
+#         if w<=0:
+#             continue
+#         u = random.random()
+#         key = -math.log(u) / w     # stable form of E–S
+#         keys.append((key, item))
+
+#     #smallest = heapq.nsmallest(k, keys)
+#     #return [item for (key, item) in smallest]
+
+
+
+import numpy as np
+import random, math
+
+def weighted_topk(items, weights, k):
+    # compute numeric keys ONLY -> flat list of floats
+    keys = np.empty(len(weights), dtype=float)
+
+    for i, w in enumerate(weights):
+        if w <= 0:
+            keys[i] = np.inf        # ensures it's never selected
+        else:
+            u = random.random()
+            keys[i] = -math.log(u) / w
+
+    # get indices of k smallest keys
+    idx = np.argpartition(keys, k)[:k]
+
+    # map back to the items
+    return [items[i] for i in idx]
+
+
+
 
 
 
@@ -94,12 +146,17 @@ class _SummaryGraph_(KnowledgeGraph):
         # Internal triples
         self._topk_neighbors = self._compute_topk_internal_triples()
 
-        # Boundary candidates
+        # # Boundary candidates
         cand, w = self._compute_random_candidates_weighted()
 
-        # NEW: weighted sampling WITHOUT replacement
-        self.random_padding_order = weighted_permutation(cand, w)
+        # # NEW: weighted sampling WITHOUT replacement
+        # self.random_padding_order = weighted_permutation(cand, w)
+        # self.random_padding_index = 0
+
+        remaining = self.max_triples - self.triple_count
+        self.random_padding_order = weighted_topk(cand, w, remaining)
         self.random_padding_index = 0
+
 
         # Build summary
         self._build_summary()
@@ -1470,7 +1527,7 @@ def process_snapshots(subgraph_dir):
 def main():
     # Define the subgraph directory
     dynagraph = {}  # Initialize as a dictionary
-    subgraph_dir ='/home/ama/dbp'#"/Users/au735195/Desktop/dbp"# "/Users/au735195/Downloads/KG_IMDB30"#"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #" "/Users/au735195/Downloads/KG_snapshots"#
+    subgraph_dir ="/Users/au735195/Desktop/dbp"# "/Users/au735195/Downloads/KG_IMDB30"#"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #" "/Users/au735195/Downloads/KG_snapshots"#
  
     # Load and process snapshots
     print("Loading all subgraph snapshots...")
