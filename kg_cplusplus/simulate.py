@@ -101,7 +101,7 @@ import os
 import sys
 
 # ---------- CONFIG ----------
-NUM_RUNS = 10
+NUM_RUNS = 1
 PARENT_DIR = Path("multi_runs")
 ORIGINAL_SCRIPT = "montecarlo.py"   # change if your script has a different name
 PYTHON_BIN = sys.executable         # uses same python interpreter that's running this script

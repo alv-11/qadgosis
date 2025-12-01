@@ -780,6 +780,8 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
         //double weight = puv * pv; // omit pu for now
         double alpha = 0.25;
         double weight = (1.0 - alpha) * puv + alpha * pv;
+        
+        
         //double weight = pi_uv_norm[node] ;
         weighted_scores.emplace_back(node, weight);
 
