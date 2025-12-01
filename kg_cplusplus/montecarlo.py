@@ -10,14 +10,13 @@ from src.base import KnowledgeGraph
 from collections import Counter
 import matplotlib.pyplot as plt
 import powerlaw
-#from itertools import chain
+import math
 from src.base import KnowledgeGraph, YAGO, DBPedia, Freebase, MetaQA
 from src.path import DBPEDIA_DATA_DIR, YAGO_DATA_DIR, METAQA_DATA_DIR, METAQA_DATA_DIR_ABLATION, ENCODING
 from src.user import query_log_by_mids, query_log_by_topics
 from src.glimpse import SummaryMethod, GLIMPSE
 from src.isummary import ISUMMARY
 from src.metrics import total_query_log_metrics, average_query_log_metrics
-#import src.qadgosis.main_old as qadgosis
 import src.qadgosis.main  as walks
 from src.apex import APEX, DETAILED_LOGGING, APEX_
 from collections import defaultdict, deque
@@ -27,12 +26,6 @@ import heapq
 import sys
 from pathlib import Path
 run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
-# then save e.g. df.to_csv(run_dir / "sankofa_results.csv")
-
-
-
-import time
-import pandas as pd
 
 
 
@@ -47,12 +40,12 @@ METHODS = {
     'glimpse-2': SummaryMethod(GLIMPSE, 'GLIMPSE-2', power=2),
     'apex': SummaryMethod(APEX, 'APEX'),
     'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
-    #'pagerank': SummaryMethod(PR, 'PageRank')
+
 }
 
 
-import random
-import math
+
+
 
 # def weighted_permutation(candidates, weights):
 #     """
@@ -1029,8 +1022,8 @@ def _safe_concat_df(list_of_dfs, rename_from="Timestep Window", rename_to="Times
 
 
 
-def process_summary_sankofa(top_k_nodes_dict, global_pr_dict, graphs, label, weights, test_data,
-                            walks_runtime=None, max_triples=None, query_freq=None, n_priority=None):
+def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, test_data,
+                            walks_runtime=None, max_triples=None, query_freq=None, global_pr_dict=None, n_priority=None):
     """
     Fully restored Sankofa processing:
     - Computes Future Test F1
@@ -1586,7 +1579,7 @@ def main():
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
     weights = results["all_weights"]
     runtime_per_timestep = results["runtime_per_timestep"]
-    global_pr = results["global_pr"]
+    #global_pr = results["global_pr"]
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
@@ -1594,8 +1587,8 @@ def main():
 
     #print("Processing summaries...")
     triples_no, sankofa = process_summary_sankofa(
-        top_k_cumsum_walks, global_pr, graphs, label="Cumsum Walks", weights=weights,
-        test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size, query_freq=queryfreq_, n_priority=50
+        top_k_cumsum_walks,  graphs, label="Cumsum Walks", weights=weights,
+        test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size, query_freq=queryfreq_, global_pr= None, n_priority=50
     )
     sankofa.to_csv("sankofa_results.csv", index=False)
     print(triples_no)
