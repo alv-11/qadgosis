@@ -49,27 +49,55 @@ METHODS = {
 import numpy as np
 import random
 
+import numpy as np
+import random
+import math
+from collections import defaultdict
 
 
 
+
+import numpy as np
+import random
 
 
 def topk_nodes_by_score(nodes, scores, k):
     """
-    Select top-k nodes by score using ONLY argpartition.
-    No sorting at all.
+    Select top-k nodes by score using partial sort.
+    Returns nodes sorted by descending score.
     """
+    # if k >= len(nodes):
+    #     # return fully sorted
+    #     return sorted(nodes, key=lambda n: scores[n], reverse=True)
+
+
+    # arr = np.array([scores[n] for n in nodes], dtype=float)
+    # idx = np.argpartition(arr, k)[:k]
+
+    # # sort only the selected nodes
+    # idx = idx[np.argsort(-arr[idx])]
+
+    # return [nodes[i] for i in idx]
+
     n = len(nodes)
-    if k >= n:
-        return nodes
+    arr = np.array([scores[n] for n in nodes], dtype=float)
 
-    score_arr = np.array([scores[n] for n in nodes], dtype=float)
+    keys = np.empty(n, dtype=float)
+    for i, w in enumerate(arr):
+        if w <= 0:
+            pass
+            keys[i] = np.inf
+        else:
+            u = random.random()
+            keys[i] = -math.log(u) / (w)
 
-    # argpartition gives the indices of top-k highest scores
-    idx = np.argpartition(-score_arr, k)[:k]
+    idx = np.argpartition(keys, k)[:k]
 
-    # return nodes in arbitrary partition order
     return [nodes[i] for i in idx]
+
+
+
+
 
 
 
@@ -78,11 +106,11 @@ class SummaryGraph(KnowledgeGraph):
     # ----------------------------------------------------------------------
     # Initialization
     # ----------------------------------------------------------------------
-    def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
+    def __init__(self, KG, top_k_nodes, max_triples=None):
         super().__init__()
 
         self.parent_ = KG
-        self.top_k_nodes = top_k_nodes       
+        self.top_k_nodes = top_k_nodes        # dict: node → importance score
         self.top_k_set = set(top_k_nodes.keys())
         self.max_triples = max_triples
 
@@ -94,6 +122,7 @@ class SummaryGraph(KnowledgeGraph):
 
         # Compute internal triples (top-k internal structure)
         self.internal_triples = self._compute_internal_triples()
+        
 
         # Boundary triples will be generated during summary construction
         self._build_summary()
@@ -162,6 +191,7 @@ class SummaryGraph(KnowledgeGraph):
             return internal
 
         # Else: rank by score(e1) + score(e2) and partial sort
+        print("Ranking internal triples...")
         weights = np.array([scores[t[0]] + scores[t[2]] for t in internal], dtype=float)
         k = budget
 
@@ -180,7 +210,9 @@ class SummaryGraph(KnowledgeGraph):
         top_k_list = list(self.top_k_set)
 
         # Sort top-k nodes by score using partial sort
-        k_nodes = len(top_k_list)  # use all, just sort them
+        k_nodes = len(top_k_list) -1
+        # remaining = self.max_triples - self.triple_count
+        # k_nodes = max(1, min(len(top_k_list) - 1, remaining//2))
         ordered_nodes = topk_nodes_by_score(top_k_list, scores, k_nodes)
 
         for u in ordered_nodes:
@@ -209,14 +241,13 @@ class SummaryGraph(KnowledgeGraph):
             self._try_add_triple(t)
 
         # 2. Expand boundary triples by node importance (Option 1)
-        print("Adding boundary triples by node importance...")
         for t in self._boundary_triples_node_level():
             if self._limit_reached():
                 return
             self._try_add_triple(t)
 
         # 3. Fallback: include any parent triple if budget remains
-        print("Adding fallback triples from parent...")
+        print("Adding fallback triples...")
         if not self._limit_reached():
             for s, rels in self.parent_.triples_.items():
                 for r, nbrs in rels.items():
@@ -226,245 +257,26 @@ class SummaryGraph(KnowledgeGraph):
                         self._try_add_triple((s, r, o))
 
 
-def weighted_topk(items, weights, k):
-    """
-    Deterministic top-k using partial sort (largest weights).
-    """
-    if k >= len(items):
-        return items
-
-    w = np.asarray(weights, dtype=float)
-    idx = np.argpartition(-w, k)[:k]
-    return [items[i] for i in idx]
-
-
-# class _SummaryGraph__(KnowledgeGraph):
-
-#     def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
-#         super().__init__()
-
-#         self.parent_ = KG
-#         self.top_k_nodes = top_k_nodes               # dict: node → score
-#         self.top_k_set = set(top_k_nodes.keys())
-#         self.max_triples = max_triples
-#         self.batch_size = batch_size
-
-#         self.triple_count = 0
-#         self.triples_set = set()
-
-#         # Reverse index restricted to top-k
-#         self.reverse_index = self._build_reverse_index_topk_only()
-
-#         # Internal triples (deterministic top weighted)
-#         self._topk_neighbors = self._compute_topk_internal_triples()
-
-#         # Boundary candidates (no sampling)
-#         cand, w = self._compute_boundary_candidates()
-
-#         remaining = max_triples - self.triple_count
-#         self.random_padding_order = weighted_topk(cand, w, remaining)
-#         self.random_padding_index = 0
-
-#         self._build_summary()
-
-
-#     # ---------------------------
-#     # Helpers
-#     # ---------------------------
-
-#     def parent(self):
-#         return self.parent_
-
-#     def _limit_reached(self):
-#         return self.max_triples is not None and self.triple_count >= self.max_triples
-
-#     def _try_add_triple(self, triple):
-#         if triple not in self.triples_set:
-#             self.add_triple(triple)
-#             self.triples_set.add(triple)
-#             self.triple_count += 1
-
-
-#     # ---------------------------
-#     # Reverse index
-#     # ---------------------------
-
-#     def _build_reverse_index_topk_only(self):
-#         reverse_idx = {}
-#         parent = self.parent_.triples_
-#         top_k = self.top_k_set
-
-#         for s, rel_dict in parent.items():
-#             for r, nbrs in rel_dict.items():
-#                 for o in nbrs:
-#                     if o in top_k:
-#                         reverse_idx.setdefault(o, []).append((s, r))
-
-#         return reverse_idx
-
-
-#     # ---------------------------
-#     # INTERNAL TRIPLES (top-k × top-k)
-#     # ---------------------------
-
-#     def _compute_topk_internal_triples(self):
-#         parent = self.parent_.triples_
-#         rev = self.reverse_index
-#         scores = self.top_k_nodes
-#         top_k_nodes = self.top_k_set
-#         budget = self.max_triples
-
-#         internal = []
-
-#         # Collect internal triples
-#         for e1 in top_k_nodes:
-#             if e1 in parent:
-#                 for r, nbrs in parent[e1].items():
-#                     for e2 in nbrs:
-#                         if e2 in top_k_nodes:
-#                             internal.append((e1, r, e2))
-
-#             if e1 in rev:
-#                 for e2, r in rev[e1]:
-#                     if e2 in top_k_nodes:
-#                         internal.append((e2, r, e1))
-
-#         # If small, keep all
-#         if len(internal) <= budget:
-#             return [(0.0, t) for t in internal]
-
-#         # Otherwise: score + partial select budget elements
-#         weights = [scores[t[0]] + scores[t[2]] for t in internal]
-#         warr = np.asarray(weights)
-#         idx = np.argpartition(-warr, budget)[:budget]
-
-#         selected = [(weights[i], internal[i]) for i in idx]
-#         return selected
-
-
-#     # ---------------------------
-#     # BOUNDARY TRIPLES
-#     # ---------------------------
-
-#     def _compute_boundary_candidates(self):
-#         """
-#         All (top-k node) boundary triples with weights.
-#         Deterministic partial ranking, no sampling.
-#         """
-#         parent = self.parent_.triples_
-#         rev = self.reverse_index
-#         scores = self.top_k_nodes
-#         top_k = self.top_k_set
-
-#         candidates = []
-#         weights = []
-
-#         for e1 in top_k:
-
-#             # Outgoing
-#             if e1 in parent:
-#                 for r, nbrs in parent[e1].items():
-#                     for e2 in nbrs:
-#                         w = scores[e1] + scores.get(e2, 0.0)
-#                         candidates.append((e1, r, e2))
-#                         weights.append(w)
-
-#             # Incoming
-#             if e1 in rev:
-#                 for e2, r in rev[e1]:
-#                     w = scores[e1] + scores.get(e2, 0.0)
-#                     candidates.append((e2, r, e1))
-#                     weights.append(w)
-
-#         return candidates, weights
-
-
-#     # ---------------------------
-#     # Summary builder
-#     # ---------------------------
-
-#     def _build_summary(self):
-
-#         # 1. Add internal triples
-#         for score, triple in self._topk_neighbors:
-#             if self._limit_reached():
-#                 break
-#             self._try_add_triple(triple)
-
-#         # 2. Add boundary triples in batches
-#         while not self._limit_reached():
-#             added = self.add_related_random_triples_batch(self.batch_size)
-#             if not added:
-#                 break
-
-#         # 3. Fallback: add ANY triple from parent
-#         if not self._limit_reached():
-#             parent_edges = []
-#             triples = self.parent_.triples_
-#             for s, rels in triples.items():
-#                 for r, nbrs in rels.items():
-#                     for o in nbrs:
-#                         parent_edges.append((s, r, o))
-
-#             while not self._limit_reached() and parent_edges:
-#                 t = random.choice(parent_edges)
-#                 self._try_add_triple(t)
-
-
-#     # ---------------------------
-#     # Batched addition
-#     # ---------------------------
-
-#     def add_related_random_triples_batch(self, batch_size=100):
-#         order = self.random_padding_order
-#         idx = self.random_padding_index
-#         n = len(order)
-
-#         if idx >= n:
-#             return False
-
-#         remaining = self.max_triples - self.triple_count
-#         k = min(batch_size, remaining)
-
-#         end = min(idx + k, n)
-#         batch = order[idx:end]
-
-#         added = False
-#         for triple in batch:
-#             if self._limit_reached():
-#                 break
-#             if triple not in self.triples_set:
-#                 self._try_add_triple(triple)
-#                 added = True
-
-#         self.random_padding_index = end
-#         return added
-
-
-
-################
-
 
 # def weighted_topk(items, weights, k):
-#     keys = np.empty(len(weights), dtype=float)
+#     """
+#     Pure argpartition version (no randomness, no ES).
+#     Selects top-k items with the *highest* weights.
+#     Complexity: O(n).
+#     """
+#     # n = len(weights)
+#     # if k >= n:
+#     #     return items[:]  # return all
 
-#     for i, w in enumerate(weights):
-#         if w <= 0:
-#             keys[i] = np.inf       
-#         else:
-#             u = random.random()
-#             keys[i] = -math.log(u) / w
+#     w = np.asarray(weights, dtype=float)
 
-#     # get indices of k smallest keys
-#     idx = np.argpartition(keys, k)[:k]
+#     # partial select k highest weights
+#     idx = np.argpartition(w, k)[:k]
 
 #     return [items[i] for i in idx]
 
 
-
-
-
-# class _SummaryGraph_(KnowledgeGraph):
+# class SummaryGraphqq(KnowledgeGraph):
 
 #     def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
 #         super().__init__()
@@ -474,8 +286,6 @@ def weighted_topk(items, weights, k):
 #         self.top_k_set = set(top_k_nodes.keys())
 #         self.max_triples = max_triples
 #         self.batch_size = batch_size
-#         # self.global_pr = global_pr
-#         # self.global_pr_set = set(global_pr.keys())
 
 #         self.triple_count = 0
 #         self.triples_set = set()
@@ -486,25 +296,16 @@ def weighted_topk(items, weights, k):
 #         # Internal triples
 #         self._topk_neighbors = self._compute_topk_internal_triples()
 
-#         # # Boundary candidates
+#         # Boundary candidates
 #         cand, w = self._compute_random_candidates_weighted()
 
-#         # # NEW: weighted sampling WITHOUT replacement
-#         # self.random_padding_order = weighted_permutation(cand, w)
-#         # self.random_padding_index = 0
-
+#         # Replace weighted random sampling with pure argpartition top-k
 #         remaining = self.max_triples - self.triple_count
 #         self.random_padding_order = weighted_topk(cand, w, remaining)
 #         self.random_padding_index = 0
 
-
-#         # cand, w = self._compute_random_candidates_weighted()
-#         # self.random_padding_order = cand          # a list of triples
-#         # self.random_padding_index = 0
-
-
 #         self._build_summary()
-
+        
 
 #     def parent(self):
 #         return self.parent_
@@ -520,6 +321,9 @@ def weighted_topk(items, weights, k):
 #             self.triple_count += 1
 
 
+#     # -------------------------------
+#     # Reverse index for incoming edges
+#     # -------------------------------
 #     def _build_reverse_index_topk_only(self):
 #         reverse_idx = {}
 #         parent = self.parent_.triples_
@@ -530,47 +334,52 @@ def weighted_topk(items, weights, k):
 #                 for o in nbrs:
 #                     if o in top_k:
 #                         reverse_idx.setdefault(o, []).append((s, r))
-
 #         return reverse_idx
 
 
+#     # -----------------------------------------------
+#     # INTERNAL TRIPLES (top-k × top-k using argpartition)
+#     # -----------------------------------------------
 #     def _compute_topk_internal_triples(self):
 #         parent = self.parent_.triples_
 #         rev = self.reverse_index
-#         top_k_nodes = self.top_k_set
+#         top_k_set = self.top_k_set
 #         scores = self.top_k_nodes
 #         budget = self.max_triples
 
 #         internal = []
 
-#         # Collect
-#         for e1 in top_k_nodes:
+#         # Collect top-k internal triples
+#         for e1 in top_k_set:
 #             if e1 in parent:
 #                 for r, nbrs in parent[e1].items():
 #                     for e2 in nbrs:
-#                         if e2 in top_k_nodes:
+#                         if e2 in top_k_set:
 #                             internal.append((e1, r, e2))
 
 #             if e1 in rev:
 #                 for e2, r in rev[e1]:
-#                     if e2 in top_k_nodes:
+#                     if e2 in top_k_set:
 #                         internal.append((e2, r, e1))
 
-#         # If small, return all
+
+#         # If internal fits, keep all (no need for ranking)
 #         if len(internal) <= budget:
 #             return [(0.0, t) for t in internal]
 
-#         # Else score
-#         scored = []
-#         for (e1, r, e2) in internal:
-#             score = scores[e1] + scores[e2]
-#             scored.append((score, (e1, r, e2)))
+#         # Compute weights
+#         w = np.array([scores[e1] + scores[e2] for (e1, _, e2) in internal], dtype=float)
 
-#         scored.sort(key=lambda x: x[0], reverse=True)
-#         return scored
+#         # partial select k highest
+#         k = budget
+#         idx = np.argpartition(-w, k)[:k]
+
+#         return [(w[i], internal[i]) for i in idx]
 
 
-
+#     # -------------------------------------------------
+#     # Compute boundary candidates + weights
+#     # -------------------------------------------------
 #     def _compute_random_candidates_weighted(self):
 #         parent = self.parent_.triples_
 #         rev = self.reverse_index
@@ -582,7 +391,7 @@ def weighted_topk(items, weights, k):
 
 #         for e1 in top_k:
 
-#             # Outgoing
+#             # outgoing
 #             if e1 in parent:
 #                 for r, nbrs in parent[e1].items():
 #                     for e2 in nbrs:
@@ -590,7 +399,7 @@ def weighted_topk(items, weights, k):
 #                         candidates.append((e1, r, e2))
 #                         weights.append(w)
 
-#             # Incoming
+#             # incoming
 #             if e1 in rev:
 #                 for e2, r in rev[e1]:
 #                     w = scores[e1] + scores.get(e2, 0.0)
@@ -600,26 +409,28 @@ def weighted_topk(items, weights, k):
 #         return candidates, weights
 
 
-
-
+#     # -------------------------------------------------
+#     # Summary construction
+#     # -------------------------------------------------
 #     def _build_summary(self):
 
-#         # 1. Internal triples
+#         # 1. Add internal triples
 #         for score, triple in self._topk_neighbors:
 #             if self._limit_reached():
 #                 break
 #             self._try_add_triple(triple)
 
-#         # 2.  C_bnd sampling
+#         # 2. Add boundary triples (from argpartition selection)
 #         while not self._limit_reached():
 #             added = self.add_related_random_triples_batch(self.batch_size)
 #             if not added:
 #                 break
 
-#         # 3. Fallback: any triple if it doesn't meet the budget
+#         # 3. Fallback: random parent triples
 #         if not self._limit_reached():
 #             parent_edges = []
 #             triples = self.parent_.triples_
+
 #             for s, rels in triples.items():
 #                 for r, nbrs in rels.items():
 #                     for o in nbrs:
@@ -630,7 +441,9 @@ def weighted_topk(items, weights, k):
 #                 self._try_add_triple(t)
 
 
-
+#     # -------------------------------------------------
+#     # Add boundary triples in batches
+#     # -------------------------------------------------
 #     def add_related_random_triples_batch(self, batch_size=100):
 #         order = self.random_padding_order
 #         idx = self.random_padding_index
@@ -655,6 +468,554 @@ def weighted_topk(items, weights, k):
 
 #         self.random_padding_index = end
 #         return added
+
+
+
+
+
+#####################edge based#################
+
+def weighted_topk(items, weights, k):
+    """
+    Deterministic top-k using partial sort (largest weights).
+    """
+    # if k >= len(items):
+    #     return items
+
+    # w = np.asarray(weights, dtype=float)
+    # idx = np.argpartition(-w, k)[:k]
+    # return [items[i] for i in idx]
+    keys = np.empty(len(weights), dtype=float)
+
+    for i, w in enumerate(weights):
+        if w <= 0:
+            keys[i] = np.inf       
+        else:
+            u = random.random()
+            keys[i] = -math.log(u) / w
+
+    # get indices of k smallest keys
+    idx = np.argpartition(keys, k)[:k]
+
+    return [items[i] for i in idx]
+
+
+class _SummaryGraph__(KnowledgeGraph):
+
+    def __init__(self, KG, top_k_nodes, non_top_k_nodes, max_triples=None, batch_size=10):
+        super().__init__()
+
+        self.parent_ = KG
+        self.top_k_nodes = top_k_nodes               # dict: node → score
+        self.top_k_set = set(top_k_nodes.keys())
+        self.max_triples = max_triples
+        self.batch_size = batch_size
+        self.non_top_k_nodes = non_top_k_nodes
+
+        self.triple_count = 0
+        self.triples_set = set()
+        #non_top_k_nodes
+
+        # Reverse index restricted to top-k
+        self.reverse_index = self._build_reverse_index_topk_only()
+
+        # Internal triples (deterministic top weighted)
+        self._topk_neighbors = self._compute_topk_internal_triples()
+
+        # Boundary candidates (no sampling)
+        cand, w = self._compute_boundary_candidates()
+
+        remaining = max_triples - self.triple_count
+        self.random_padding_order = weighted_topk(cand, w, remaining)
+        self.random_padding_index = 0
+
+        self._build_summary()
+
+
+    # ---------------------------
+    # Helpers
+    # ---------------------------
+
+    def parent(self):
+        return self.parent_
+
+    def _limit_reached(self):
+        return self.max_triples is not None and self.triple_count >= self.max_triples
+
+    def _try_add_triple(self, triple):
+        if triple not in self.triples_set:
+            self.add_triple(triple)
+            self.triples_set.add(triple)
+            self.triple_count += 1
+
+
+    # ---------------------------
+    # Reverse index
+    # ---------------------------
+
+    def _build_reverse_index_topk_only(self):
+        reverse_idx = {}
+        parent = self.parent_.triples_
+        top_k = self.top_k_set
+
+        for s, rel_dict in parent.items():
+            for r, nbrs in rel_dict.items():
+                for o in nbrs:
+                    if o in top_k:
+                        reverse_idx.setdefault(o, []).append((s, r))
+
+        return reverse_idx
+
+
+    # ---------------------------
+    # INTERNAL TRIPLES (top-k × top-k)
+    # ---------------------------
+
+    def _compute_topk_internal_triples(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        scores = self.top_k_nodes
+        top_k_nodes = self.top_k_set
+        budget = self.max_triples
+
+        internal = set() 
+
+        # Collect internal triples
+        for e1 in top_k_nodes:
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        if e2 in top_k_nodes:
+                            internal.add((e1, r, e2))
+
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    if e2 in top_k_nodes:
+                        internal.add((e2, r, e1))
+
+        print(len(internal), budget, len(set(internal)))
+
+        #internal = list(dict.fromkeys(internal))
+        internal = list(internal)
+
+        # # If small, keep all
+        if len(internal) <= budget:
+            return [(0.0, t) for t in internal]
+
+        # Otherwise: score + partial select budget elements
+        else:
+            print("Ranking internal triples...")
+            weights = [scores[t[0]] + scores[t[2]] for t in internal]
+            warr = np.asarray(weights)
+            idx = np.argpartition(-warr, budget)[:budget]
+
+            selected = [(weights[i], internal[i]) for i in idx]
+            return selected
+    
+        # If small, return all
+        # print("Internal triples:", len(internal))
+        # if len(internal) <= budget:
+        #     return [(0.0, t) for t in internal]
+
+        # # Else score
+        # print("Ranking internal triples...", len(internal))
+        # scored = []
+        # for (e1, r, e2) in internal:
+        #     score = scores[e1] + scores[e2]
+        #     scored.append((score, (e1, r, e2)))
+
+        # scored.sort(key=lambda x: x[0], reverse=True)
+        # return scored
+
+
+    # ---------------------------
+    # BOUNDARY TRIPLES
+    # ---------------------------
+
+    def _compute_boundary_candidates(self):
+        """
+        All (top-k node) boundary triples with weights.
+        Deterministic partial ranking, no sampling.
+        """
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        scores = self.top_k_nodes
+        other_scores = self.non_top_k_nodes
+        top_k = self.top_k_set
+
+        candidates = []
+        weights = []
+
+        for e1 in top_k:
+
+            # Outgoing
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        w = scores[e1] + other_scores.get(e2, 0.0)
+                        candidates.append((e1, r, e2))
+                        weights.append(w)
+
+            # Incoming
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    w = scores[e1] + other_scores.get(e2, 0.0)
+                    candidates.append((e2, r, e1))
+                    weights.append(w)
+
+        return candidates, weights
+    
+
+    def _compute_fallback_candidates(self):
+
+        parent = self.parent_.triples_
+        seen = self.triples_set
+
+        top_k = self.top_k_set
+        scores_other = self.non_top_k_nodes
+
+        candidates = []
+        weights = []
+
+        for s, rels in parent.items():
+
+            if s in top_k:        # skip top-k nodes entirely
+                continue
+
+            for r, nbrs in rels.items():
+                for o in nbrs:
+
+                    if o in top_k:   # skip edges entering top-k region
+                        continue
+
+                    triple = (s, r, o)
+
+                    if triple in seen:
+                        continue
+
+                    # weight based only on non-top-k scores
+                    w = scores_other.get(s, 0.0) + scores_other.get(o, 0.0)
+
+                    candidates.append(triple)
+                    weights.append(w)
+
+        return candidates, weights
+
+
+
+    # ---------------------------
+    # Summary builder
+    # ---------------------------
+
+    def _build_summary(self):
+
+        # 1. Add internal triples
+        for score, triple in self._topk_neighbors:
+            if self._limit_reached():
+                break
+            self._try_add_triple(triple)
+
+        print("Added internal triples:", self.triple_count)
+
+        # 2. Add boundary triples in batches
+        while not self._limit_reached():
+            #print("Adding boundary triples...")
+            added = self.add_related_random_triples_batch(self.batch_size)
+            if not added:
+                break
+
+
+        print("Adding fallback triples...")
+        fallback_start= time.time()
+        # # 3. Fallback: add ANY triple from parent
+        # print("Adding fallback triples...")
+        # if not self._limit_reached():
+        #     parent_edges = []
+        #     triples = self.parent_.triples_
+        #     for s, rels in triples.items():
+        #         for r, nbrs in rels.items():
+        #             for o in nbrs:
+        #                 parent_edges.append((s, r, o))
+
+        #     while not self._limit_reached() and parent_edges:
+        #         t = random.choice(parent_edges)
+        #         self._try_add_triple(t)
+
+        while not self._limit_reached():
+        #print("Adding boundary triples...")
+            fallback = self._fallback_add()
+            if not fallback:
+                break
+        fallback_end = time.time()
+        print("Fallback time:", fallback_end - fallback_start)
+
+    # ---------------------------
+    # Batched addition
+    # ---------------------------
+
+    def add_related_random_triples_batch(self, batch_size=100):
+        order = self.random_padding_order
+        idx = self.random_padding_index
+        n = len(order)
+
+        if idx >= n:
+            return False
+
+        remaining = self.max_triples -  self.triple_count
+        k = min(batch_size, remaining)
+
+        end = min(idx + k, n)
+        batch = order[idx:end]
+
+        added = False
+        for triple in batch:
+            if self._limit_reached():
+                break
+            if triple not in self.triples_set:
+                self._try_add_triple(triple)
+                added = True
+
+        self.random_padding_index = end
+        return added
+
+
+    def _fallback_add(self):
+        remaining = self.max_triples - self.triple_count
+        if remaining <= 0:
+            return
+
+        cand, w = self._compute_fallback_candidates()
+        if not cand:
+            return
+
+        arr = np.asarray(w, dtype=float)
+        k = min(remaining, len(arr))
+
+        idx = np.argpartition(-arr, k)[:k]
+
+        for i in idx:
+            if self._limit_reached():
+                break
+            self._try_add_triple(cand[i])
+
+
+
+###############
+
+
+def weighted_topk_(items, weights, k):
+    keys = np.empty(len(weights), dtype=float)
+
+    for i, w in enumerate(weights):
+        if w <= 0:
+            keys[i] = np.inf       
+        else:
+            u = random.random()
+            keys[i] = -math.log(u) / w
+
+    # get indices of k smallest keys
+    idx = np.argpartition(keys, k)[:k]
+
+    return [items[i] for i in idx]
+
+    # idx = np.argpartition(weights, k)[:k]
+
+    # return [items[i] for i in idx]
+
+
+
+
+class _SummaryGraph_(KnowledgeGraph):
+
+    def __init__(self, KG, top_k_nodes, max_triples=None, batch_size=10):
+        super().__init__()
+
+        self.parent_ = KG
+        self.top_k_nodes = top_k_nodes
+        self.top_k_set = set(top_k_nodes.keys())
+        self.max_triples = max_triples
+        self.batch_size = batch_size
+        #self.global_pr = global_pr
+        #self.global_pr_set = set(global_pr.keys())
+
+        self.triple_count = 0
+        self.triples_set = set()
+
+        # Build indexing
+        self.reverse_index = self._build_reverse_index_topk_only()
+
+        # Internal triples
+        self._topk_neighbors = self._compute_topk_internal_triples()
+
+        # # Boundary candidates
+        cand, w = self._compute_random_candidates_weighted()
+
+        # eighted sampling WITHOUT replacement
+
+
+        remaining = self.max_triples - self.triple_count
+        self.random_padding_order = weighted_topk(cand, w, remaining)
+        self.random_padding_index = 0
+
+
+        self._build_summary()
+
+
+    def parent(self):
+        return self.parent_
+
+    def _limit_reached(self):
+        return self.max_triples is not None and self.triple_count >= self.max_triples
+
+
+    def _try_add_triple(self, triple):
+        if triple not in self.triples_set:
+            self.add_triple(triple)
+            self.triples_set.add(triple)
+            self.triple_count += 1
+
+
+    def _build_reverse_index_topk_only(self):
+        reverse_idx = {}
+        parent = self.parent_.triples_
+        top_k = self.top_k_set
+
+        for s, rel_dict in parent.items():
+            for r, nbrs in rel_dict.items():
+                for o in nbrs:
+                    if o in top_k:
+                        reverse_idx.setdefault(o, []).append((s, r))
+
+        return reverse_idx
+
+
+    def _compute_topk_internal_triples(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        top_k_nodes = self.top_k_set
+        scores = self.top_k_nodes
+        budget = self.max_triples
+
+        internal = []
+
+        # Collect
+        for e1 in top_k_nodes:
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        if e2 in top_k_nodes:
+                            internal.append((e1, r, e2))
+
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    if e2 in top_k_nodes:
+                        internal.append((e2, r, e1))
+
+        # If small, return all
+        print("Internal triples:", len(internal))
+        if len(internal) <= budget:
+            return [(0.0, t) for t in internal]
+
+        # Else score
+        # print("Ranking internal triples...")
+        scored = []
+        for (e1, r, e2) in internal:
+            score = scores[e1] + scores[e2]
+            scored.append((score, (e1, r, e2)))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
+
+
+
+
+
+
+    def _compute_random_candidates_weighted(self):
+        parent = self.parent_.triples_
+        rev = self.reverse_index
+        top_k = self.top_k_set
+        scores = self.top_k_nodes
+
+        candidates = []
+        weights = []
+
+        for e1 in top_k:
+
+            # Outgoing
+            if e1 in parent:
+                for r, nbrs in parent[e1].items():
+                    for e2 in nbrs:
+                        w = scores[e1] + scores.get(e2, 0.0)
+                        candidates.append((e1, r, e2))
+                        weights.append(w)
+
+            # Incoming
+            if e1 in rev:
+                for e2, r in rev[e1]:
+                    w = scores[e1] + scores.get(e2, 0.0)
+                    candidates.append((e2, r, e1))
+                    weights.append(w)
+
+        return candidates, weights
+
+
+
+
+    def _build_summary(self):
+
+        # 1. Internal triples
+        for score, triple in self._topk_neighbors:
+            if self._limit_reached():
+                break
+            self._try_add_triple(triple)
+
+
+        # 2.  C_bnd sampling
+        while not self._limit_reached():
+            added = self.add_related_random_triples_batch(self.batch_size)
+            if not added:
+                break
+
+        # 3. Fallback: any triple if it doesn't meet the budget
+        if not self._limit_reached():
+            parent_edges = []
+            triples = self.parent_.triples_
+            for s, rels in triples.items():
+                for r, nbrs in rels.items():
+                    for o in nbrs:
+                        parent_edges.append((s, r, o))
+
+            while not self._limit_reached() and parent_edges:
+                t = random.choice(parent_edges)
+                self._try_add_triple(t)
+
+
+
+    def add_related_random_triples_batch(self, batch_size=100):
+        order = self.random_padding_order
+        idx = self.random_padding_index
+        n = len(order)
+
+        if idx >= n:
+            return False
+
+        remaining = self.max_triples - self.triple_count
+        k = min(batch_size, remaining)
+
+        end = min(idx + k, n)
+        batch = order[idx:end]
+
+        added = False
+        for triple in batch:
+            if self._limit_reached():
+                break
+            if triple not in self.triples_set:
+                self._try_add_triple(triple)
+                added = True
+
+        self.random_padding_index = end
+        return added
 
 
 
@@ -1364,7 +1725,7 @@ def _safe_concat_df(list_of_dfs, rename_from="Timestep Window", rename_to="Times
 
 
 
-def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, test_data,
+def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr_dict, test_data,
                             walks_runtime=None, max_triples=None,  n_priority=None):
     """
     Fully restored Sankofa processing:
@@ -1386,15 +1747,23 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, test_data
 
         KG = graphs[key]
         top_k_nodes = {str(n): v for n, v in top_k_nodes_dict[key].items()}
-        #global_pr = {str(n): v for n, v in global_pr_dict[key].items()}
+        non_top_k_nodes = {str(n): v for n, v in global_pr_dict[key].items()}
 
-        print(f"{len(top_k_nodes)} top_k nodes for timestep {key}")
+
+        
+        
+
+        # print(f"{len(top_k_nodes)} top_k nodes for timestep {key}")
+        # print(f"{len(non_top_k_nodes)} non-top_k nodes for timestep {key}")
+
+        non_top_k_nodes =  {k:v for k,v in non_top_k_nodes.items() if k not in top_k_nodes}
+        # print(f"{len(non_top_k_nodes)} non-top_k nodes for timestep {key}")
+
 
         # -------- SUMMARY + RUNTIME --------
         t0 = time.time()
 
-        S =SummaryGraph(KG, top_k_nodes, max_triples,
-                              batch_size=50)
+        S =  _SummaryGraph__(KG, top_k_nodes, non_top_k_nodes, max_triples)#SummaryGraph(KG, top_k_nodes, max_triples,batch_size=50)
 
         t1 = time.time()
 
@@ -1423,9 +1792,9 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, test_data
         )
         weighted_tests.append(df_weight)
 
-        sliding = sliding_window(window_size=2, training_set=test_data,
-                                 summary=S, i=key, test_weights=test_weights_norm)
-        print(sliding)
+        # sliding = sliding_window(window_size=2, training_set=test_data,
+        #                          summary=S, i=key, test_weights=test_weights_norm)
+        #print(sliding)
 
     # BUILD DATAFRAMES 
     df_future = pd.DataFrame(future_rows)
@@ -1853,7 +2222,7 @@ def process_snapshots(subgraph_dir):
 def main():
     # Define the subgraph directory
     dynagraph = {}  # Initialize as a dictionary
-    subgraph_dir ="/Users/au735195/Downloads/KG_IMDB30"#"/Users/au735195/Desktop/dbp"##"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" # #" "/Users/au735195/Downloads/KG_snapshots"#
+    subgraph_dir ="/Users/au735195/Downloads/KG_IMDB30"#"/Users/au735195/Desktop/dbp"######## ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
  
     # Load and process snapshots
     print("Loading all subgraph snapshots...")
@@ -1871,7 +2240,7 @@ def main():
         #print(f"Converting graph at timestep {timestep}...")
         if i == 0:
             # Calculate summary size and K for the first iteration
-            b = 0.0005
+            b = 0.0001
             summary_size = int(len(graph.edges) * b)  # Adjust the multiplier as needed
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
@@ -1911,7 +2280,8 @@ def main():
     weights = results["all_weights"]
    
     runtime_per_timestep = results["runtime_per_timestep"]
-    #global_pr = results["global_pr"]
+    non_topk_global_pr =  results["global_pr"]#
+    #print(non_topk_global_pr)
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
@@ -1919,7 +2289,7 @@ def main():
 
 
     triples_no, sankofa = process_summary_sankofa(
-        top_k_cumsum_walks,  graphs, label="Cumsum Walks", weights=weights,
+        top_k_cumsum_walks,  graphs, label="Cumsum Walks", weights=weights, global_pr_dict=non_topk_global_pr,
         test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size, n_priority=50
     )
     sankofa.to_csv("sankofa_results.csv", index=False)

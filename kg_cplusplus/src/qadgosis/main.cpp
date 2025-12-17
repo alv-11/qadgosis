@@ -150,95 +150,159 @@ int calculate_required_walk_length(double c, double epsilon, int k, int n) {
 
 
 // Generate random walks on the weighted graph; here we simply simulate num_walks walks of fixed length (10).
-RandomWalkResult generate_random_walks(const Graph_ &weighted_graph, int num_walks) {
-    RandomWalkResult result;
-    int walk_length = 5;
-    random_device rd;
-    mt19937 gen(rd());
-    vector<int> nodes;
-    for (const auto &p : weighted_graph)
-        nodes.push_back(p.first);
+// RandomWalkResult generate_random_walks(const Graph_ &weighted_graph, int num_walks) {
+//     RandomWalkResult result;
+//     int walk_length = 5;
+//     random_device rd;
+//     mt19937 gen(rd());
+//     vector<int> nodes;
+//     for (const auto &p : weighted_graph)
+//         nodes.push_back(p.first);
     
-    for (int i = 0; i < num_walks; i++){
-        vector<int> walk;
-        // Pick a random starting node.
-        uniform_int_distribution<> dis(0, nodes.size()-1);
-        int current = nodes[dis(gen)];
-        walk.push_back(current);
-        for (int j = 1; j < walk_length; j++){
-            if (weighted_graph.find(current) != weighted_graph.end() && !weighted_graph.at(current).empty()){
-                vector<int> neighbors;
-                for (const auto &nbr : weighted_graph.at(current))
-                    neighbors.push_back(nbr.first);
-                uniform_int_distribution<> dis2(0, neighbors.size()-1);
-                current = neighbors[dis2(gen)];
-            } else {
-                break;
-            }
-            walk.push_back(current);
-        }
-        result.precomputed_walks[i].push_back(walk);
-    }
-    return result;
-}
+//     for (int i = 0; i < num_walks; i++){
+//         vector<int> walk;
+//         // Pick a random starting node.
+//         uniform_int_distribution<> dis(0, nodes.size()-1);
+//         int current = nodes[dis(gen)];
+//         walk.push_back(current);
+//         for (int j = 1; j < walk_length; j++){
+//             if (weighted_graph.find(current) != weighted_graph.end() && !weighted_graph.at(current).empty()){
+//                 vector<int> neighbors;
+//                 for (const auto &nbr : weighted_graph.at(current))
+//                     neighbors.push_back(nbr.first);
+//                 uniform_int_distribution<> dis2(0, neighbors.size()-1);
+//                 current = neighbors[dis2(gen)];
+//             } else {
+//                 break;
+//             }
+//             walk.push_back(current);
+//         }
+//         result.precomputed_walks[i].push_back(walk);
+//     }
+//     return result;
+// }
 
-RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length) {
+// RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length) {
+//     RandomWalkResult result;
+//     std::random_device rd;
+//     std::mt19937 gen(rd());
+
+//     std::vector<int> nodes;
+//     for (const auto& p : weighted_graph)
+//         nodes.push_back(p.first);  // Only consider nodes with outgoing edges
+
+//     for (int i = 0; i < num_walks; i++) {
+//         std::vector<int> walk;
+
+//         // Pick a random starting node
+//         std::uniform_int_distribution<> dis(0, nodes.size() - 1);
+//         int current = nodes[dis(gen)];
+//         walk.push_back(current);
+
+//         for (int j = 1; j < walk_length; j++) {
+//             const auto it = weighted_graph.find(current);
+//             if (it == weighted_graph.end() || it->second.empty())
+//                 break;
+
+//             const auto& neighbors_map = it->second;
+
+//             std::vector<int> neighbors;
+//             std::vector<double> weights;
+//             for (const auto& [neighbor, weight] : neighbors_map) {
+//                 neighbors.push_back(neighbor);
+//                 weights.push_back(weight);
+//             }
+
+//             double sum_weights = std::accumulate(weights.begin(), weights.end(), 0.0);
+//             if (sum_weights > 0.0) {
+//                 for (auto& w : weights)
+//                     w /= sum_weights;  // Normalize to probabilities
+//             } else {
+//                 weights.assign(neighbors.size(), 1.0 / neighbors.size()); // Uniform fallback
+//             }
+
+//             std::discrete_distribution<> weight_dist(weights.begin(), weights.end());
+//             current = neighbors[weight_dist(gen)];
+//             walk.push_back(current);
+//         }
+
+//         result.precomputed_walks[i].push_back(walk);
+//     }
+
+//     return result;
+// }
+
+
+RandomWalkResult generate_random_walks_directed_weighted(
+    const Graph_& weighted_graph,
+    int walks_per_node,
+    int walk_length
+) {
     RandomWalkResult result;
     std::random_device rd;
     std::mt19937 gen(rd());
 
+    // Get all starting nodes
     std::vector<int> nodes;
     for (const auto& p : weighted_graph)
-        nodes.push_back(p.first);  // Only consider nodes with outgoing edges
+        nodes.push_back(p.first);
 
-    for (int i = 0; i < num_walks; i++) {
-        std::vector<int> walk;
+    int walk_id = 0;
 
-        // Pick a random starting node
-        std::uniform_int_distribution<> dis(0, nodes.size() - 1);
-        int current = nodes[dis(gen)];
-        walk.push_back(current);
+    // For each node, generate `walks_per_node` walks
+    for (int start_node : nodes) {
+        for (int w = 0; w < walks_per_node; w++) {
 
-        for (int j = 1; j < walk_length; j++) {
-            const auto it = weighted_graph.find(current);
-            if (it == weighted_graph.end() || it->second.empty())
-                break;
-
-            const auto& neighbors_map = it->second;
-
-            std::vector<int> neighbors;
-            std::vector<double> weights;
-            for (const auto& [neighbor, weight] : neighbors_map) {
-                neighbors.push_back(neighbor);
-                weights.push_back(weight);
-            }
-
-            double sum_weights = std::accumulate(weights.begin(), weights.end(), 0.0);
-            if (sum_weights > 0.0) {
-                for (auto& w : weights)
-                    w /= sum_weights;  // Normalize to probabilities
-            } else {
-                weights.assign(neighbors.size(), 1.0 / neighbors.size()); // Uniform fallback
-            }
-
-            std::discrete_distribution<> weight_dist(weights.begin(), weights.end());
-            current = neighbors[weight_dist(gen)];
+            std::vector<int> walk;
+            int current = start_node;
             walk.push_back(current);
-        }
 
-        result.precomputed_walks[i].push_back(walk);
+            for (int j = 1; j < walk_length; j++) {
+                auto it = weighted_graph.find(current);
+                if (it == weighted_graph.end() || it->second.empty())
+                    break;
+
+                const auto& neighbors_map = it->second;
+
+                std::vector<int> neighbors;
+                std::vector<double> weights;
+                neighbors.reserve(neighbors_map.size());
+                weights.reserve(neighbors_map.size());
+
+                for (const auto& [nbr, wgt] : neighbors_map) {
+                    neighbors.push_back(nbr);
+                    weights.push_back(wgt);
+                }
+
+                double sum_w = std::accumulate(weights.begin(), weights.end(), 0.0);
+                if (sum_w > 0) {
+                    for (double& w : weights) w /= sum_w;
+                } else {
+                    weights.assign(neighbors.size(), 1.0 / neighbors.size());
+                }
+
+                std::discrete_distribution<> dist(weights.begin(), weights.end());
+                current = neighbors[dist(gen)];
+                walk.push_back(current);
+            }
+
+            result.precomputed_walks[walk_id].push_back(walk);
+            walk_id++;
+        }
     }
 
     return result;
 }
 
 
-// Dummy function to update random walks. Here we simply re‐generate them.
-RandomWalkResult update_random_walks(int timestep, const Graph_ &weighted_graph, 
-                                     const RandomWalkResult &previous_data, 
-                                     const GraphChanges &changes, int num_walks) {
-    return generate_random_walks(weighted_graph, num_walks);
-}
+
+
+// // Dummy function to update random walks. Here we simply re‐generate them.
+// RandomWalkResult update_random_walks(int timestep, const Graph_ &weighted_graph, 
+//                                      const RandomWalkResult &previous_data, 
+//                                      const GraphChanges &changes, int num_walks) {
+//     return generate_random_walks(weighted_graph, num_walks);
+// }
 
 RandomWalkResult update_random_walks_directed_with_weights(
     const Graph_& graph,
@@ -685,6 +749,8 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
     // 3. Apply decay
     std::unordered_map<int, double> decayed_counts;
     std::unordered_map<int, double> individual_weights;
+  
+
     for (int j : relevant_timesteps) {
         double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
         //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
@@ -735,13 +801,18 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 
 
 
+
+
 //    # Step B: π(u,v) approximated by cumulative counts normalized
-//     std::unordered_map<int, double> pi_uv;
-//     //double total_cumulative = 0.0;
-//     for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
-//     for (const auto& [node, value] : cumulative_counts) {
-//         pi_uv[node] = value;//(total_cumulative > 0) ? (value / total_cumulative) : 0.0;
-//     }
+    std::unordered_map<int, double> pi_u;
+    double total_cumulative = 0.0;
+    for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
+    for (const auto& [node, value] : cumulative_counts) {
+        pi_u[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
+    }
+
+
+
 
     std::unordered_map<int, double> pi_uv_raw;
     std::unordered_map<int, double> pi_uv_norm;
@@ -767,34 +838,61 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
     
     //double fallback = 0;  // negligible, avoids exact zero
     std::vector<std::pair<int, double>> weighted_scores;
+    std::vector<std::pair<int, double>> weighted_scores_others;
+    std::cout << "MC PageRank size at timestep "  ": " << pi_v.size() << std::endl;
     for (const auto& [node, val] : cumulative_counts) {
-        //double pu = pi_u[node];       // local importance
+
+        //double pu = pi_u[node];       // big walk importance
         double puv = pi_uv_norm[node];     // co-occurrence weight
         double pv = pi_v[node];       // global popularity
 
-        // //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
-        //double puv = (pi_uv_norm.find(node) != pi_uv_norm.end()) ? pi_uv_norm.at(node) : fallback;
-        // double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
+        
 
-        // //double weight = pu * puv * pv;
-        //double weight = puv * pv; // omit pu for now
+        // //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
+       
+        
+        
+
+        // //double puv = (pi_uv_norm.find(node) != pi_uv_norm.end()) ? pi_uv_norm.at(node) : fallback;
+        // // double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
+
+        // // //double weight = pu * puv * pv;
+        // //double weight = puv * pv; // omit pu for now
         double alpha = 0.25;
         double weight = (1.0 - alpha) * puv + alpha * pv;
         
         
+        
         //double weight = pi_uv_norm[node] ;
+
         weighted_scores.emplace_back(node, weight);
+        
+
+        
 
 
 
     }
-    
+    for (const auto& [node, _] : pi_v) {
+        double pu = (pi_u.find(node) != pi_u.end()) ? pi_u.at(node) : 0.0;
+
+        double pv = pi_v[node];       // global popularity
+
+        double alpha = 0.25;
+        double weight_others = (1.0 - alpha) * pu + alpha * pv;
+        //double weight_others = pv;
+        weighted_scores_others.emplace_back(node, weight_others);
+
+    // use pu here
+} 
+
     // Sort nodes by weight
-    std::sort(weighted_scores.begin(), weighted_scores.end(), 
-        [](const auto& a, const auto& b) { return a.second > b.second; });
+    // std::sort(weighted_scores.begin(), weighted_scores.end(), 
+    //     [](const auto& a, const auto& b) { return a.second > b.second; });
 
     // 5. Select top-k nodes
     std::unordered_map<int, double> top_k;
+    std::unordered_map<int, double> nontop_k;
     std::unordered_set<int> selected;
 
     for (int i = 0; i < static_cast<int>(weighted_scores.size()); //&& top_k.size() < static_cast<size_t>(k)
@@ -806,6 +904,15 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 
         top_k[node] = weighted_scores[i].second;
         selected.insert(node);
+    }
+
+
+    for (int i = 0; i < static_cast<int>(weighted_scores_others.size()); //&& top_k.size() < static_cast<size_t>(k)
+     ++i) {
+        int node = weighted_scores_others[i].first;
+
+
+        nontop_k[node] = weighted_scores_others[i].second;
     }
     // // 6. Final padding from cumulative_counts keys if still needed
     // double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
@@ -830,7 +937,7 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
     // Return top-k nodes and the timestep weights (for debugging/analysis)
     result.top_k = std::move(top_k);
     result.individual_weights = std::move(individual_weights);
-    result.pi_v = pi_v;
+    result.nontop_k = std::move(nontop_k);
     return result;
     //return {top_k, individual_weights, pi_v};
 }
@@ -1241,13 +1348,18 @@ TopKSummaryWithWeights generate_top_k_summary(
         auto start = chrono::high_resolution_clock::now();
         RandomWalkResult R;
         if (t == 0) {
+    
             R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
             summary.random_walks[t] = R;
+
+
         } else {
+            //R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
             R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
             summary.random_walks[t] = R;
         }
         auto end = chrono::high_resolution_clock::now();
+
 
         chrono::duration<double> elapsed_update = end - start;
         //cout << "elapsed time walk update for timestep " << t << ": " << elapsed_update.count() << " seconds" << endl;
@@ -1265,6 +1377,7 @@ TopKSummaryWithWeights generate_top_k_summary(
   
         // Process the random walk results
         auto processed_R = process_walk_results(R.precomputed_walks);
+        std::cout << "Processed R size at timestep " << t << ": " << processed_R.size() << std::endl;
         processed_R_per_t.push_back(processed_R);
 
         //int len_R = processed_R.begin()->second.size();
@@ -1273,10 +1386,10 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
 
-        // for (const auto& [start_node, walks] : processed_R) {
-        //     auto& dest = accumulated_walks[start_node];
-        //     dest.insert(dest.end(), walks.begin(), walks.end());
-        // }
+        for (const auto& [start_node, walks] : processed_R) {
+            auto& dest = accumulated_walks[start_node];
+            dest.insert(dest.end(), walks.begin(), walks.end());
+        }
        
 
 
@@ -1356,7 +1469,10 @@ TopKSummaryWithWeights generate_top_k_summary(
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
 
-        auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);//(accumulated_walks);//, accumulated_nodes.size(), total_R);//(processed_R, n, len_R);
+        auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);//(accumulated_walks);//////, accumulated_nodes.size(), total_R);//(processed_R, n, len_R);
+        //auto pr4 = MCWalks::MC_CompletePath_StopAtDangling_FromWalks(processed_R);
+
+
         //auto pr = approximate_pagerank_from_walks(accumulated_walks, accumulated_nodes.size(), total_R, epsilon);
         //auto pr = approximate_pagerank_from_walks(processed_R, n, len_R, epsilon);
         // Calculate top-k cumulative wi
@@ -1378,7 +1494,7 @@ TopKSummaryWithWeights generate_top_k_summary(
  
 
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
-        summary.global_pr[t] = top_k_result.pi_v;
+        summary.global_pr[t] = top_k_result.nontop_k;
         weights[t] = top_k_result.individual_weights; // Store weights for the current timestep
 
         auto time_end = chrono::high_resolution_clock::now();
