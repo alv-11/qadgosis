@@ -1,5 +1,5 @@
-# qadgosis
-Complete Robust Online Graph Summaries
+# SANKOFA
+Query-aware Online Incremental Graph Summaries
 
 I created new directories for the code so I don't mix things up. `original` is the original code on the synthetic graph, `kg_python` is the code applied to KGs and `kg_cplusplus` is the C++ code applied to KGs.
 
