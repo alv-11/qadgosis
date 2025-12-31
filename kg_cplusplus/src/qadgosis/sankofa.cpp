@@ -1,7 +1,7 @@
-#include "walks.cpp"
+//#include "walks.cpp"
 #include "mainwrap.h"
 #include "mc_algo.h"
-#include "hybrid.h"
+//#include "hybrid.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -9,9 +9,7 @@ namespace py = pybind11;
 
 using namespace std;
 
-// Define our graph as an adjacency map: for each node an unordered_map of neighbor->weight.
 using Graph_ = unordered_map<int, unordered_map<int, double>>;
-// And the directed graph for random walk purposes.
 using DirectedGraph = unordered_map<int, vector<int>>;
 
 
@@ -36,8 +34,7 @@ PersonalizedGraphResult personalized_graph(const Graph_ &graph,
     for (const auto &p : queries) {
         query_nodes.push_back(p.second);
     }
-    // Define a dummy node. (In Python the dummy was built by concatenating "123456789" with the timestep;
-    // here we simply add the timestep to a base number.)
+    // Define a dummy node
     int dummy_node = 123456789 + timestep;
     double equal_weight = 1.0 / query_nodes.size();
     // Add an edge from the dummy node to each query node.
@@ -149,89 +146,6 @@ int calculate_required_walk_length(double c, double epsilon, int k, int n) {
 }
 
 
-// Generate random walks on the weighted graph; here we simply simulate num_walks walks of fixed length (10).
-// RandomWalkResult generate_random_walks(const Graph_ &weighted_graph, int num_walks) {
-//     RandomWalkResult result;
-//     int walk_length = 5;
-//     random_device rd;
-//     mt19937 gen(rd());
-//     vector<int> nodes;
-//     for (const auto &p : weighted_graph)
-//         nodes.push_back(p.first);
-    
-//     for (int i = 0; i < num_walks; i++){
-//         vector<int> walk;
-//         // Pick a random starting node.
-//         uniform_int_distribution<> dis(0, nodes.size()-1);
-//         int current = nodes[dis(gen)];
-//         walk.push_back(current);
-//         for (int j = 1; j < walk_length; j++){
-//             if (weighted_graph.find(current) != weighted_graph.end() && !weighted_graph.at(current).empty()){
-//                 vector<int> neighbors;
-//                 for (const auto &nbr : weighted_graph.at(current))
-//                     neighbors.push_back(nbr.first);
-//                 uniform_int_distribution<> dis2(0, neighbors.size()-1);
-//                 current = neighbors[dis2(gen)];
-//             } else {
-//                 break;
-//             }
-//             walk.push_back(current);
-//         }
-//         result.precomputed_walks[i].push_back(walk);
-//     }
-//     return result;
-// }
-
-// RandomWalkResult generate_random_walks_directed_weighted(const Graph_& weighted_graph, int num_walks, int walk_length) {
-//     RandomWalkResult result;
-//     std::random_device rd;
-//     std::mt19937 gen(rd());
-
-//     std::vector<int> nodes;
-//     for (const auto& p : weighted_graph)
-//         nodes.push_back(p.first);  // Only consider nodes with outgoing edges
-
-//     for (int i = 0; i < num_walks; i++) {
-//         std::vector<int> walk;
-
-//         // Pick a random starting node
-//         std::uniform_int_distribution<> dis(0, nodes.size() - 1);
-//         int current = nodes[dis(gen)];
-//         walk.push_back(current);
-
-//         for (int j = 1; j < walk_length; j++) {
-//             const auto it = weighted_graph.find(current);
-//             if (it == weighted_graph.end() || it->second.empty())
-//                 break;
-
-//             const auto& neighbors_map = it->second;
-
-//             std::vector<int> neighbors;
-//             std::vector<double> weights;
-//             for (const auto& [neighbor, weight] : neighbors_map) {
-//                 neighbors.push_back(neighbor);
-//                 weights.push_back(weight);
-//             }
-
-//             double sum_weights = std::accumulate(weights.begin(), weights.end(), 0.0);
-//             if (sum_weights > 0.0) {
-//                 for (auto& w : weights)
-//                     w /= sum_weights;  // Normalize to probabilities
-//             } else {
-//                 weights.assign(neighbors.size(), 1.0 / neighbors.size()); // Uniform fallback
-//             }
-
-//             std::discrete_distribution<> weight_dist(weights.begin(), weights.end());
-//             current = neighbors[weight_dist(gen)];
-//             walk.push_back(current);
-//         }
-
-//         result.precomputed_walks[i].push_back(walk);
-//     }
-
-//     return result;
-// }
-
 
 RandomWalkResult generate_random_walks_directed_weighted(
     const Graph_& weighted_graph,
@@ -297,12 +211,6 @@ RandomWalkResult generate_random_walks_directed_weighted(
 
 
 
-// // Dummy function to update random walks. Here we simply re‐generate them.
-// RandomWalkResult update_random_walks(int timestep, const Graph_ &weighted_graph, 
-//                                      const RandomWalkResult &previous_data, 
-//                                      const GraphChanges &changes, int num_walks) {
-//     return generate_random_walks(weighted_graph, num_walks);
-// }
 
 RandomWalkResult update_random_walks_directed_with_weights(
     const Graph_& graph,
@@ -496,7 +404,6 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
     int k,
     int timestep,
     std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
-    //const std::unordered_map<int, std::unordered_map<int, int>>& query_freqs, // {timestep -> {query -> freq}}
     double decay_rate = 0.38,
     int window_size = 5,
     int n = 0             // total number of nodes,
@@ -586,136 +493,136 @@ std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calc
 }
 
 
-std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights(
-    const std::vector<int>& walk,
-    std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
-    int k,
-    int timestep,
-    std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
-    std::unordered_map<int, double> & pi_v, // global popularity (π(v))
-    double decay_rate = 0.38,
-    int window_size = 5,
-    int n = 0             // total number of nodes,
+// std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights(
+//     const std::vector<int>& walk,
+//     std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
+//     int k,
+//     int timestep,
+//     std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
+//     std::unordered_map<int, double> & pi_v, // global popularity (π(v))
+//     double decay_rate = 0.38,
+//     int window_size = 5,
+//     int n = 0             // total number of nodes,
     
 
-    ) {
-    // 1. Count queries for current timestep
-    for (int node : walk) {
-        counters[timestep][node]++;
-    }
+//     ) {
+//     // 1. Count queries for current timestep
+//     for (int node : walk) {
+//         counters[timestep][node]++;
+//     }
 
-    // 2. Collect relevant timesteps (sliding window)
-    std::vector<int> keys;
-    for (const auto& entry : counters) keys.push_back(entry.first);
-    std::sort(keys.begin(), keys.end());
-    int latest_timestep = keys.back();
-    int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
-    std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
+//     // 2. Collect relevant timesteps (sliding window)
+//     std::vector<int> keys;
+//     for (const auto& entry : counters) keys.push_back(entry.first);
+//     std::sort(keys.begin(), keys.end());
+//     int latest_timestep = keys.back();
+//     int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
+//     std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
 
-    // 3. Apply decay
-    std::unordered_map<int, double> decayed_counts;
-    std::unordered_map<int, double> individual_weights;
-    for (int j : relevant_timesteps) {
-        double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
-        //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
-        individual_weights[j] = weight;
+//     // 3. Apply decay
+//     std::unordered_map<int, double> decayed_counts;
+//     std::unordered_map<int, double> individual_weights;
+//     for (int j : relevant_timesteps) {
+//         double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
+//         //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
+//         individual_weights[j] = weight;
 
-        for (const auto& [node, count] : counters[j]) {
-            decayed_counts[node] += count * weight;
-        }
-    }
+//         for (const auto& [node, count] : counters[j]) {
+//             decayed_counts[node] += count * weight;
+//         }
+//     }
 
-    // 4. Update cumulative counts
-    for (const auto& [node, decayed_count] : decayed_counts) {
-        cumulative_counts[node] += decayed_count;
-    }
+//     // 4. Update cumulative counts
+//     for (const auto& [node, decayed_count] : decayed_counts) {
+//         cumulative_counts[node] += decayed_count;
+//     }
 
-    // ------------------------------------------------------------------
-    // NEW: Properly compute π(u), π(u,v), π(v), and w(u,v)
-    // ------------------------------------------------------------------
+//     // ------------------------------------------------------------------
+//     // NEW: Properly compute π(u), π(u,v), π(v), and w(u,v)
+//     // ------------------------------------------------------------------
 
-    // Step A: π(u) = normalized count of this timestep
-    std::unordered_map<int, double> pi_u; // per timestep
-    int total_bigwalk = 0;
-    for (const auto& [node, count] : counters[timestep]) {
-        total_bigwalk += count;
-    }
+//     // Step A: π(u) = normalized count of this timestep
+//     std::unordered_map<int, double> pi_u; // per timestep
+//     int total_bigwalk = 0;
+//     for (const auto& [node, count] : counters[timestep]) {
+//         total_bigwalk += count;
+//     }
 
-    for (const auto& [node, count] : counters[timestep]) {
-        pi_u[node] = (total_bigwalk > 0) ? (static_cast<double>(count) / total_bigwalk) : 0.0;
-    }
+//     for (const auto& [node, count] : counters[timestep]) {
+//         pi_u[node] = (total_bigwalk > 0) ? (static_cast<double>(count) / total_bigwalk) : 0.0;
+//     }
 
 
-    // Step B: π(u,v) approximated by cumulative counts normalized
-    std::unordered_map<int, double> pi_uv;
-    double total_cumulative = 0.0;
-    for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
-    for (const auto& [node, value] : cumulative_counts) {
-        pi_uv[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
-    }
+//     // Step B: π(u,v) approximated by cumulative counts normalized
+//     std::unordered_map<int, double> pi_uv;
+//     double total_cumulative = 0.0;
+//     for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
+//     for (const auto& [node, value] : cumulative_counts) {
+//         pi_uv[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
+//     }
 
  
 
-    // Step D: Combine into weights
-    double fallback = 1e-12;  // negligible, avoids exact zero
-    std::vector<std::pair<int, double>> weighted_scores;
-    for (const auto& [node, val] : cumulative_counts) {
-        //double pu = pi_u[node];       // local importance
-        //double puv = pi_uv[node];     // co-occurrence weight
-        //double pv = pi_v[node];       // global popularity
+//     // Step D: Combine into weights
+//     double fallback = 1e-12;  // negligible, avoids exact zero
+//     std::vector<std::pair<int, double>> weighted_scores;
+//     for (const auto& [node, val] : cumulative_counts) {
+//         //double pu = pi_u[node];       // local importance
+//         //double puv = pi_uv[node];     // co-occurrence weight
+//         //double pv = pi_v[node];       // global popularity
 
-        //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
-        double puv = (pi_uv.find(node) != pi_uv.end()) ? pi_uv.at(node) : fallback;
-        double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
+//         //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
+//         double puv = (pi_uv.find(node) != pi_uv.end()) ? pi_uv.at(node) : fallback;
+//         double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
 
-        //double weight = pu * puv * pv;
-        //double weight = puv * pv; // omit pu for now
-        double alpha = 0.25;
-        double weight = (1.0 - alpha) * puv + alpha * pv;
+//         //double weight = pu * puv * pv;
+//         //double weight = puv * pv; // omit pu for now
+//         double alpha = 0.25;
+//         double weight = (1.0 - alpha) * puv + alpha * pv;
 
-        weighted_scores.emplace_back(node, weight);
+//         weighted_scores.emplace_back(node, weight);
 
 
 
-    }
+//     }
     
-    // Sort nodes by weight
-    std::sort(weighted_scores.begin(), weighted_scores.end(), 
-        [](const auto& a, const auto& b) { return a.second > b.second; });
+//     // Sort nodes by weight
+//     std::sort(weighted_scores.begin(), weighted_scores.end(), 
+//         [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    // 5. Select top-k nodes
-    std::unordered_map<int, double> top_k;
-    std::unordered_set<int> selected;
+//     // 5. Select top-k nodes
+//     std::unordered_map<int, double> top_k;
+//     std::unordered_set<int> selected;
 
-    for (int i = 0; i < static_cast<int>(weighted_scores.size()) && top_k.size() < static_cast<size_t>(k); ++i) {
-        int node = weighted_scores[i].first;
+//     for (int i = 0; i < static_cast<int>(weighted_scores.size()) && top_k.size() < static_cast<size_t>(k); ++i) {
+//         int node = weighted_scores[i].first;
 
-        // Skip if node ID starts with "12345"
-        if (std::to_string(node).rfind("12345", 0) == 0) continue;
+//         // Skip if node ID starts with "12345"
+//         if (std::to_string(node).rfind("12345", 0) == 0) continue;
 
-        top_k[node] = weighted_scores[i].second;
-        selected.insert(node);
-    }
-    // 6. Final padding from cumulative_counts keys if still needed
-    double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
+//         top_k[node] = weighted_scores[i].second;
+//         selected.insert(node);
+//     }
+//     // 6. Final padding from cumulative_counts keys if still needed
+//     double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
 
-    for (const auto& [node, _] : cumulative_counts) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = min_score;  // instead of 0.0
-        }
-    }
+//     for (const auto& [node, _] : cumulative_counts) {
+//         if (top_k.size() >= static_cast<size_t>(k)) break;
+//         if (selected.insert(node).second) {
+//             top_k[node] = min_score;  // instead of 0.0
+//         }
+//     }
     
-    for (int node : walk) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = 0.0;
-        }
-    }
+//     for (int node : walk) {
+//         if (top_k.size() >= static_cast<size_t>(k)) break;
+//         if (selected.insert(node).second) {
+//             top_k[node] = 0.0;
+//         }
+//     }
 
-    // Return top-k nodes and the timestep weights (for debugging/analysis)
-    return {top_k, individual_weights};
-}
+//     // Return top-k nodes and the timestep weights (for debugging/analysis)
+//     return {top_k, individual_weights};
+// }
 
 
 
@@ -880,10 +787,10 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 
         double alpha = 0.25;
         double weight_others = (1.0 - alpha) * pu + alpha * pv;
-        //double weight_others = pv;
+        //double weight_others = pu;
         weighted_scores_others.emplace_back(node, weight_others);
 
-    // use pu here
+  
 } 
 
     // Sort nodes by weight
@@ -959,321 +866,321 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 
 
 
-std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_oracle(
-    const std::vector<int>& walk,
-    std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
-    int k,
-    int timestep,
-    std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
-    std::unordered_map<int, double> & pi_u, // global popularity (π(v))
-    std::unordered_map<int, double> & pi_v, // global popularity (π(v))
-    double decay_rate = 0.38,
-    int window_size = 5,
-    int n = 0             // total number of nodes,
+// std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_oracle(
+//     const std::vector<int>& walk,
+//     std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
+//     int k,
+//     int timestep,
+//     std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
+//     std::unordered_map<int, double> & pi_u, // global popularity (π(v))
+//     std::unordered_map<int, double> & pi_v, // global popularity (π(v))
+//     double decay_rate = 0.38,
+//     int window_size = 5,
+//     int n = 0             // total number of nodes,
     
 
-    ) {
-    // 1. Count queries for current timestep
-    for (int node : walk) {
-        counters[timestep][node]++;
-    }
+//     ) {
+//     // 1. Count queries for current timestep
+//     for (int node : walk) {
+//         counters[timestep][node]++;
+//     }
 
-    // 2. Collect relevant timesteps (sliding window)
-    std::vector<int> keys;
-    for (const auto& entry : counters) keys.push_back(entry.first);
-    std::sort(keys.begin(), keys.end());
-    int latest_timestep = keys.back();
-    int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
-    std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
+//     // 2. Collect relevant timesteps (sliding window)
+//     std::vector<int> keys;
+//     for (const auto& entry : counters) keys.push_back(entry.first);
+//     std::sort(keys.begin(), keys.end());
+//     int latest_timestep = keys.back();
+//     int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
+//     std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
 
-    // 3. Apply decay
-    std::unordered_map<int, double> decayed_counts;
-    std::unordered_map<int, double> individual_weights;
-    for (int j : relevant_timesteps) {
-        double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
-        //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
-        individual_weights[j] = weight;
+//     // 3. Apply decay
+//     std::unordered_map<int, double> decayed_counts;
+//     std::unordered_map<int, double> individual_weights;
+//     for (int j : relevant_timesteps) {
+//         double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
+//         //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
+//         individual_weights[j] = weight;
 
-        for (const auto& [node, count] : counters[j]) {
-            decayed_counts[node] += count * weight;
-        }
-    }
+//         for (const auto& [node, count] : counters[j]) {
+//             decayed_counts[node] += count * weight;
+//         }
+//     }
 
-    // 4. Update cumulative counts
-    for (const auto& [node, decayed_count] : decayed_counts) {
-        cumulative_counts[node] += decayed_count;
-    }
+//     // 4. Update cumulative counts
+//     for (const auto& [node, decayed_count] : decayed_counts) {
+//         cumulative_counts[node] += decayed_count;
+//     }
 
-    // ------------------------------------------------------------------
-    // NEW: Properly compute π(u), π(u,v), π(v), and w(u,v)
-    // ------------------------------------------------------------------
+//     // ------------------------------------------------------------------
+//     // NEW: Properly compute π(u), π(u,v), π(v), and w(u,v)
+//     // ------------------------------------------------------------------
 
-    // Step A: π(u) = normalized count of this timestep
-    // std::unordered_map<int, double> pi_u; // per timestep
-    // int total_bigwalk = 0;
-    // for (const auto& [node, count] : counters[timestep]) {
-    //     total_bigwalk += count;
-    // }
+//     // Step A: π(u) = normalized count of this timestep
+//     // std::unordered_map<int, double> pi_u; // per timestep
+//     // int total_bigwalk = 0;
+//     // for (const auto& [node, count] : counters[timestep]) {
+//     //     total_bigwalk += count;
+//     // }
 
-    // for (const auto& [node, count] : counters[timestep]) {
-    //     pi_u[node] = (total_bigwalk > 0) ? (static_cast<double>(count) / total_bigwalk) : 0.0;
-    // }
+//     // for (const auto& [node, count] : counters[timestep]) {
+//     //     pi_u[node] = (total_bigwalk > 0) ? (static_cast<double>(count) / total_bigwalk) : 0.0;
+//     // }
 
 
-    // Step B: π(u,v) approximated by cumulative counts normalized
-    std::unordered_map<int, double> pi_uv;
-    double total_cumulative = 0.0;
-    for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
-    for (const auto& [node, value] : cumulative_counts) {
-        pi_uv[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
-    }
+//     // Step B: π(u,v) approximated by cumulative counts normalized
+//     std::unordered_map<int, double> pi_uv;
+//     double total_cumulative = 0.0;
+//     for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
+//     for (const auto& [node, value] : cumulative_counts) {
+//         pi_uv[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
+//     }
 
  
 
-    // Step D: Combine into weights
-    double fallback = 1e-12;  // negligible, avoids exact zero
-    std::vector<std::pair<int, double>> weighted_scores;
-    for (const auto& [node, val] : cumulative_counts) {
+//     // Step D: Combine into weights
+//     double fallback = 1e-12;  // negligible, avoids exact zero
+//     std::vector<std::pair<int, double>> weighted_scores;
+//     for (const auto& [node, val] : cumulative_counts) {
   
 
-        //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
-        double puv = (pi_uv.find(node) != pi_uv.end()) ? pi_uv.at(node) : fallback;
-        double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
+//         //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
+//         double puv = (pi_uv.find(node) != pi_uv.end()) ? pi_uv.at(node) : fallback;
+//         double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
 
-        //double weight = pu * puv * pv;
-        //double weight = puv * pv;
+//         //double weight = pu * puv * pv;
+//         //double weight = puv * pv;
         
 
 
-        double alpha = 0.25;
-        double weight = (1.0 - alpha) * puv + alpha * pv;
-        weighted_scores.emplace_back(node, weight);
+//         double alpha = 0.25;
+//         double weight = (1.0 - alpha) * puv + alpha * pv;
+//         weighted_scores.emplace_back(node, weight);
 
 
-        // std::cout << "Node " << node
-        // << " | pu=" << pu
-        // << " | puv=" << puv
-        // << " | pv=" << pv
-        // << " | score=" << weight
-        // << std::endl;
+//         // std::cout << "Node " << node
+//         // << " | pu=" << pu
+//         // << " | puv=" << puv
+//         // << " | pv=" << pv
+//         // << " | score=" << weight
+//         // << std::endl;
 
-    }
+//     }
     
-    // Sort nodes by weight
-    std::sort(weighted_scores.begin(), weighted_scores.end(), 
-        [](const auto& a, const auto& b) { return a.second > b.second; });
+//     // Sort nodes by weight
+//     std::sort(weighted_scores.begin(), weighted_scores.end(), 
+//         [](const auto& a, const auto& b) { return a.second > b.second; });
 
-    // 5. Select top-k nodes
-    std::unordered_map<int, double> top_k;
-    std::unordered_set<int> selected;
+//     // 5. Select top-k nodes
+//     std::unordered_map<int, double> top_k;
+//     std::unordered_set<int> selected;
 
-    for (int i = 0; i < static_cast<int>(weighted_scores.size()) && top_k.size() < static_cast<size_t>(k); ++i) {
-        int node = weighted_scores[i].first;
+//     for (int i = 0; i < static_cast<int>(weighted_scores.size()) && top_k.size() < static_cast<size_t>(k); ++i) {
+//         int node = weighted_scores[i].first;
 
-        // Skip if node ID starts with "12345"
-        if (std::to_string(node).rfind("12345", 0) == 0) continue;
+//         // Skip if node ID starts with "12345"
+//         if (std::to_string(node).rfind("12345", 0) == 0) continue;
 
-        top_k[node] = weighted_scores[i].second;
-        selected.insert(node);
-    }
+//         top_k[node] = weighted_scores[i].second;
+//         selected.insert(node);
+//     }
 
-    //Pad if fewer than k nodes
-    for (const auto& [node, _] : cumulative_counts) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = 0.0;
-        }
-    }
+//     //Pad if fewer than k nodes
+//     for (const auto& [node, _] : cumulative_counts) {
+//         if (top_k.size() >= static_cast<size_t>(k)) break;
+//         if (selected.insert(node).second) {
+//             top_k[node] = 0.0;
+//         }
+//     }
 
-    double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
+//     double min_score = weighted_scores.empty() ? 0.0 : weighted_scores.back().second;
 
-    for (const auto& [node, _] : cumulative_counts) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = min_score;  // instead of 0.0
-        }
-    }
+//     for (const auto& [node, _] : cumulative_counts) {
+//         if (top_k.size() >= static_cast<size_t>(k)) break;
+//         if (selected.insert(node).second) {
+//             top_k[node] = min_score;  // instead of 0.0
+//         }
+//     }
     
-    for (int node : walk) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = 0.0;
-        }
-    }
+//     for (int node : walk) {
+//         if (top_k.size() >= static_cast<size_t>(k)) break;
+//         if (selected.insert(node).second) {
+//             top_k[node] = 0.0;
+//         }
+//     }
 
-    // Return top-k nodes and the timestep weights (for debugging/analysis)
-    return {top_k, individual_weights};
-}
-
-
+//     // Return top-k nodes and the timestep weights (for debugging/analysis)
+//     return {top_k, individual_weights};
+// }
 
 
 
 
 
 
-std::unordered_map<int, double> pagerank_power_iteration_(
-    const std::unordered_map<int, std::unordered_map<int, double>>& graph, // adjacency with weights
-    int n,
-    double damping = 0.85,
-    double epsilon = 1e-6,
-    int max_iter = 100
-) {
-    std::unordered_map<int, double> pr, new_pr;
-    pr.reserve(n);
-    new_pr.reserve(n);
-
-    double init_val = 1.0 / n;
-
-    // Initialize all nodes
-    for (const auto& [node, _] : graph) {
-        pr[node] = init_val;
-        new_pr[node] = 0.0;
-    }
-
-    // Precompute out-degree sums (weights)
-    std::unordered_map<int, double> out_sum;
-    out_sum.reserve(graph.size());
-    for (const auto& [u, neighbors] : graph) {
-        double total = 0.0;
-        for (const auto& [v, w] : neighbors) {
-            total += w;
-        }
-        out_sum[u] = total;
-    }
-
-    for (int iter = 0; iter < max_iter; iter++) {
-        // Reset new_pr to teleportation
-        double base = (1.0 - damping) / n;
-        for (auto& [node, val] : new_pr) {
-            val = base;
-        }
-
-        // Distribute rank with weights
-        for (const auto& [u, neighbors] : graph) {
-            if (out_sum[u] == 0.0) continue; // dangling node
-
-            double contrib = damping * pr[u] / out_sum[u];
-            for (const auto& [v, w] : neighbors) {
-                new_pr[v] += contrib * w;
-            }
-        }
-
-        // Check convergence
-        double diff = 0.0;
-        for (const auto& [node, val] : pr) {
-            diff += std::fabs(new_pr[node] - val);
-        }
-
-        if (diff < epsilon) break;
-
-        std::swap(pr, new_pr); // avoid copying
-    }
-
-    return pr;
-}
 
 
-std::unordered_map<int, double> pagerank_power_iteration(
-    const std::unordered_map<int, std::unordered_map<int, double>>& graph,
-    int n,
-    const std::unordered_set<int>& personalization_set = {}, // optional
-    double damping = 0.85,
-    double epsilon = 1e-6,
-    int max_iter = 100
-) {
-    std::unordered_map<int, double> pr, new_pr;
-    pr.reserve(n);
-    new_pr.reserve(n);
+// std::unordered_map<int, double> pagerank_power_iteration_(
+//     const std::unordered_map<int, std::unordered_map<int, double>>& graph, // adjacency with weights
+//     int n,
+//     double damping = 0.85,
+//     double epsilon = 1e-6,
+//     int max_iter = 100
+// ) {
+//     std::unordered_map<int, double> pr, new_pr;
+//     pr.reserve(n);
+//     new_pr.reserve(n);
 
-    // Teleportation base (uniform if personalization empty)
-    bool personalized = !personalization_set.empty();
-    double base = personalized ? 1.0 / personalization_set.size() : 1.0 / n;
+//     double init_val = 1.0 / n;
 
-    // Initialize PR values
-    for (const auto& [node, _] : graph) {
-        if (personalized) {
-            pr[node] = (personalization_set.count(node) ? base : 0.0);
-        } else {
-            pr[node] = base;
-        }
-        new_pr[node] = 0.0;
-    }
+//     // Initialize all nodes
+//     for (const auto& [node, _] : graph) {
+//         pr[node] = init_val;
+//         new_pr[node] = 0.0;
+//     }
 
-    // Precompute out-degree sums
-    std::unordered_map<int, double> out_sum;
-    out_sum.reserve(graph.size());
-    for (const auto& [u, neighbors] : graph) {
-        double total = 0.0;
-        for (const auto& [v, w] : neighbors) {
-            total += w;
-        }
-        out_sum[u] = total;
-    }
+//     // Precompute out-degree sums (weights)
+//     std::unordered_map<int, double> out_sum;
+//     out_sum.reserve(graph.size());
+//     for (const auto& [u, neighbors] : graph) {
+//         double total = 0.0;
+//         for (const auto& [v, w] : neighbors) {
+//             total += w;
+//         }
+//         out_sum[u] = total;
+//     }
 
-    for (int iter = 0; iter < max_iter; iter++) {
-        // Reset new_pr to teleportation
-        for (auto& [node, val] : new_pr) {
-            val = 0.0;
-        }
-        if (personalized) {
-            for (int u : personalization_set) {
-                new_pr[u] = (1.0 - damping) * base;
-            }
-        } else {
-            for (auto& [node, val] : new_pr) {
-                val = (1.0 - damping) / n;
-            }
-        }
+//     for (int iter = 0; iter < max_iter; iter++) {
+//         // Reset new_pr to teleportation
+//         double base = (1.0 - damping) / n;
+//         for (auto& [node, val] : new_pr) {
+//             val = base;
+//         }
 
-        // Distribute rank
-        for (const auto& [u, neighbors] : graph) {
-            if (out_sum[u] == 0.0) continue; // dangling node
-            double contrib = damping * pr[u] / out_sum[u];
-            for (const auto& [v, w] : neighbors) {
-                new_pr[v] += contrib * w;
-            }
-        }
+//         // Distribute rank with weights
+//         for (const auto& [u, neighbors] : graph) {
+//             if (out_sum[u] == 0.0) continue; // dangling node
 
-        // Check convergence
-        double diff = 0.0;
-        for (const auto& [node, val] : pr) {
-            diff += std::fabs(new_pr[node] - val);
-        }
-        if (diff < epsilon) break;
+//             double contrib = damping * pr[u] / out_sum[u];
+//             for (const auto& [v, w] : neighbors) {
+//                 new_pr[v] += contrib * w;
+//             }
+//         }
 
-        std::swap(pr, new_pr);
-    }
+//         // Check convergence
+//         double diff = 0.0;
+//         for (const auto& [node, val] : pr) {
+//             diff += std::fabs(new_pr[node] - val);
+//         }
 
-    return pr;
-}
+//         if (diff < epsilon) break;
+
+//         std::swap(pr, new_pr); // avoid copying
+//     }
+
+//     return pr;
+// }
 
 
+// std::unordered_map<int, double> pagerank_power_iteration(
+//     const std::unordered_map<int, std::unordered_map<int, double>>& graph,
+//     int n,
+//     const std::unordered_set<int>& personalization_set = {}, // optional
+//     double damping = 0.85,
+//     double epsilon = 1e-6,
+//     int max_iter = 100
+// ) {
+//     std::unordered_map<int, double> pr, new_pr;
+//     pr.reserve(n);
+//     new_pr.reserve(n);
 
-std::unordered_map<int, double> approximate_pagerank_from_walks(
-    const std::unordered_map<int, std::vector<std::vector<std::string>>> &precomputed_walks,
-    int n,
-    int R,
-    double epsilon
-) {
-    std::unordered_map<int, double> walks_counts;
+//     // Teleportation base (uniform if personalization empty)
+//     bool personalized = !personalization_set.empty();
+//     double base = personalized ? 1.0 / personalization_set.size() : 1.0 / n;
 
-    for (const auto& [start_node, walks] : precomputed_walks) {
-        for (const auto& walk : walks) { 
-            for (const auto& node_str : walk) {
-                int node = std::stoi(node_str); // convert string → int
-                walks_counts[node] += 1.0;
-            }
-        }
-    }
+//     // Initialize PR values
+//     for (const auto& [node, _] : graph) {
+//         if (personalized) {
+//             pr[node] = (personalization_set.count(node) ? base : 0.0);
+//         } else {
+//             pr[node] = base;
+//         }
+//         new_pr[node] = 0.0;
+//     }
 
-    // normalize
-    std::unordered_map<int, double> pi_v;
-    for (const auto& [node, count] : walks_counts) {
-        pi_v[node] = count / (n * R / epsilon);
-    }
-    return pi_v;
-}
+//     // Precompute out-degree sums
+//     std::unordered_map<int, double> out_sum;
+//     out_sum.reserve(graph.size());
+//     for (const auto& [u, neighbors] : graph) {
+//         double total = 0.0;
+//         for (const auto& [v, w] : neighbors) {
+//             total += w;
+//         }
+//         out_sum[u] = total;
+//     }
+
+//     for (int iter = 0; iter < max_iter; iter++) {
+//         // Reset new_pr to teleportation
+//         for (auto& [node, val] : new_pr) {
+//             val = 0.0;
+//         }
+//         if (personalized) {
+//             for (int u : personalization_set) {
+//                 new_pr[u] = (1.0 - damping) * base;
+//             }
+//         } else {
+//             for (auto& [node, val] : new_pr) {
+//                 val = (1.0 - damping) / n;
+//             }
+//         }
+
+//         // Distribute rank
+//         for (const auto& [u, neighbors] : graph) {
+//             if (out_sum[u] == 0.0) continue; // dangling node
+//             double contrib = damping * pr[u] / out_sum[u];
+//             for (const auto& [v, w] : neighbors) {
+//                 new_pr[v] += contrib * w;
+//             }
+//         }
+
+//         // Check convergence
+//         double diff = 0.0;
+//         for (const auto& [node, val] : pr) {
+//             diff += std::fabs(new_pr[node] - val);
+//         }
+//         if (diff < epsilon) break;
+
+//         std::swap(pr, new_pr);
+//     }
+
+//     return pr;
+// }
+
+
+
+// std::unordered_map<int, double> approximate_pagerank_from_walks(
+//     const std::unordered_map<int, std::vector<std::vector<std::string>>> &precomputed_walks,
+//     int n,
+//     int R,
+//     double epsilon
+// ) {
+//     std::unordered_map<int, double> walks_counts;
+
+//     for (const auto& [start_node, walks] : precomputed_walks) {
+//         for (const auto& walk : walks) { 
+//             for (const auto& node_str : walk) {
+//                 int node = std::stoi(node_str); // convert string → int
+//                 walks_counts[node] += 1.0;
+//             }
+//         }
+//     }
+
+//     // normalize
+//     std::unordered_map<int, double> pi_v;
+//     for (const auto& [node, count] : walks_counts) {
+//         pi_v[node] = count / (n * R / epsilon);
+//     }
+//     return pi_v;
+// }
 
 
 
@@ -1636,7 +1543,7 @@ result_dict["all_weights"] = all_weights;
 return result_dict;
 }
 
-PYBIND11_MODULE(main, m) {
+PYBIND11_MODULE(sankofa, m) {
 m.doc() = "Python bindings for generate_top_k_summary function using the C++ walks library";
 m.def("generate_top_k_summary", &wrap_generate_top_k_summary,
 "Generate a top-k summary from dynamic graph updates.",

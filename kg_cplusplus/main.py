@@ -1,527 +1,607 @@
-import argparse
-import random
-import logging
-import json
-import pdb
-import numpy as np
-from src.apex import APEX_naive
-from src.pagerank import PR
-from src.path import DBPEDIA_DATA_DIR, YAGO_DATA_DIR, METAQA_DATA_DIR, METAQA_DATA_DIR_ABLATION, ENCODING
 import os
-from itertools import chain
+import time
+import random
+import numpy as np
+import pandas as pd
 import networkx as nx
-
-
-
-logging.basicConfig(format='[%(asctime)s] - %(message)s',
-                    level=logging.DEBUG,
-                    filename = 'log.log', filemode= 'a')
-
-from time import time
-
-from src.base import YAGO, DBPedia, Freebase, MetaQA
-from src.user import query_log_by_mids, query_log_by_topics
+from collections import Counter
+import powerlaw
+from src.base import DBPedia
+from src.user import query_log_by_mids
 from src.glimpse import SummaryMethod, GLIMPSE
-from src.apex import APEX_naive, APEX, DETAILED_LOGGING
-#from src.qadgosis import QADGOSIS
-from src.metrics import total_query_log_metrics, average_query_log_metrics
+from src.isummary import ISUMMARY
+from src.metrics import total_query_log_metrics
+from src.summary import _SummaryGraph__
+import src.qadgosis.sankofa  as walks
+from src.apex import APEX, DETAILED_LOGGING, APEX_
+import pickle
+import sys
+from pathlib import Path
+run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
-# Available choices for user input arguments in main
-# TODO: Change these to point to your local data directories
-KG_MAPPING = {
-    'YAGO': YAGO(rdf_gz='yagoFacts.gz', query_dir='final/', mid_dir='by-mid/'),
-    'Freebase': Freebase(query_dir='queries/final/'),
-    'DBPedia': '../PKG_EXP/DBpedia/dbpedia_subgraphs_int', #DBPedia(),
-    'MetaQA': MetaQA(ablation=0),
-}
+
+
 
 METHODS = { 
     'glimpse': SummaryMethod(GLIMPSE, 'GLIMPSE'),
     'glimpse-2': SummaryMethod(GLIMPSE, 'GLIMPSE-2', power=2),
     'apex': SummaryMethod(APEX, 'APEX'),
-    'apex-n': SummaryMethod(APEX_naive, 'APEX-N'),
-    'pagerank': SummaryMethod(PR, 'PageRank'),
-    #'mc': SummaryMethod(QADGOSIS, 'MC')
+    'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
+
 }
 
 
-
-def answer_queries_in_log(KG, K, i, training_set, test_set, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=0.5, query_num_per_test=1):
-    """
-    :param KG: KnowledgeGraph
-    :param K: summary constraint
-    :param query_log: list of dict
-    :param summary_methods: summarization methods to use
-    :param test_size: percent of queries to hold out for testing
-    """
-
-    for summary_method in summary_methods:
-        logging.info('\t---Summarizing with {}---'.format(summary_method.name()))
-
-        if summary_method.name_[0:4] != 'APEX': # baselines
-            if summary_method.name_[0:7] == 'GLIMPSE':
-                update_time_list = []
-                acc_list = []
-
-
-                if i==0 :
-                    if DETAILED_LOGGING:
-                        logging.info('Summarizing for query: {}'.format(i))
-                        print("Summarizing for query: ", i)
-
-                    t0 = time()
-
-                    S = summary_method(KG, K, training_set[i]) 
-
-                    runtime = time() - t0
-                    print("runtime: ", runtime)
-                    update_time_list.append(runtime)
-
-
-
-                    total_F1, total_precision, total_recall = total_query_log_metrics(S, test_set[i])
-                    if DETAILED_LOGGING:
-                        logging.info('\t  Total F1/precision/recall')
-                        logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                            total_F1, total_precision, total_recall))
-
-                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_set[i])
-                    if DETAILED_LOGGING:
-                        logging.info('\t  Average F1/precision/recall')
-                        logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                            avg_F1, avg_precision, avg_recall))
-                    print(total_F1, total_precision, total_recall)
-                    print(avg_F1, avg_precision, avg_recall)
-
-                
-                else:
-                    if DETAILED_LOGGING:
-                        logging.info('Re-summarizing for query: {}'.format(i))
-                        print("Re-summarizing for query: ", i)
-
-                    t0 = time()
-                    
-
-
-                    def flatten_list(nested_list):
-                        """ Recursively flattens a nested list """
-                        for item in nested_list:
-                            if isinstance(item, list):
-                                yield from flatten_list(item)
-                            else:
-                                yield item
-                   
-
-                    keys = list(training_set.keys())
-                    target_index = keys.index(i)
-                    merged_logs = [training_set[key] for key in keys[:target_index + 1]]
-                    merged_logs = list(flatten_list(merged_logs))
-
-
-                    S = summary_method(KG, K, merged_logs) 
-
-                    runtime = time() - t0
-                    print("runtime: ", runtime)
-                    update_time_list.append(runtime)
-
-
-
-                    print("future queries")
-                    total_F1, total_precision, total_recall = total_query_log_metrics(S, test_set[i])
-                    if DETAILED_LOGGING:
-                        logging.info('\t  Total F1/precision/recall')
-                        logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                            total_F1, total_precision, total_recall))
-
-                    avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, test_set[i])
-                    if DETAILED_LOGGING:
-                        logging.info('\t  Average F1/precision/recall')
-                        logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                            avg_F1, avg_precision, avg_recall))
-                    
-                    acc_list.append(avg_F1)
-                    print(total_F1, total_precision, total_recall)
-                    print(avg_F1, avg_precision, avg_recall)
-
-
-                    print("sliding window of 2")
-                    timesteps = sorted(training_set.keys())
-
-                   #window size = 2
-                    window_size = 2
-                    for j in range(len(timesteps) - window_size + 1):  # Ensures we don't go out of bounds
-                        t1, t2 = timesteps[j : j + window_size]
-                        if t2 <= i and i != 0:
-                            print(f"Processing window: Timestep {t1} → Timestep {t2}")
-                        
-                            data_t1 = training_set[t1]
-                            data_t2 = training_set[t2]
-
-                            combined_data = data_t1 + data_t2 
-                            print(len(combined_data))
-
-                            total_F1, total_precision, total_recall = total_query_log_metrics(S, combined_data)
-                            avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, combined_data)
-
-
-                        # Logging
-                            #if DETAILED_LOGGING:
-                            #    logging.info(f"\t  [{label}] Total F1/precision/recall: {total_F1:.2f}/{total_precision:.2f}/{total_recall:.2f}")
-                            #    logging.info(f"\t  [{label}] Average F1/precision/recall: {avg_F1:.2f}/{avg_precision:.2f}/{avg_recall:.2f}")
-
-                            print(total_F1, total_precision, total_recall)
-                            print(avg_F1, avg_precision, avg_recall)
-
-                    # if len(timesteps) >= window_size:
-                    #     t1, t2 = timesteps[-window_size:]  
-                        
-                    #     print(f"Processing window: Timestep {t1} → Timestep {t2}")
-                        
-                    #     data_t1 = training_set[t1]
-                    #     data_t2 = training_set[t2]
-
-                    #     combined_data = data_t1 + data_t2 
-                    #     print(len(combined_data))
-
-
-                    # total_F1, total_precision, total_recall = total_query_log_metrics(S, combined_data )
-                    # if DETAILED_LOGGING:
-                    #     logging.info('\t  Total F1/precision/recall')
-                    #     logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                    #         total_F1, total_precision, total_recall))
-
-                    # avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, combined_data)
-                    # if DETAILED_LOGGING:
-                    #     logging.info('\t  Average F1/precision/recall')
-                    #     logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                    #         avg_F1, avg_precision, avg_recall))
-                    
-                    acc_list.append(avg_F1)
-                    #print(total_F1, total_precision, total_recall)
-                    #print(avg_F1, avg_precision, avg_recall)
-                    ##    
-                    #t+=1
-
-                logging.info('\t  Ave Time on Each Training Log: {:.2f} seconds'.format(np.mean(update_time_list)))
-                logging.info('\t  Ave Ave F1 on Each Training Log: {:.2f}'.format(np.mean(acc_list)))
-
-                acc_list_glimpse += acc_list
-                update_time_list_glimpse += update_time_list
-
-                np.save(KG.user_dir + '/acc_list_glimpse.npy', acc_list)
-                np.save(KG.user_dir + '/time_list_glimpse.npy', update_time_list)
-                np.save(KG.user_dir + '/time_list_glimpse.npy', update_time_list)
-
-
-                
-
-
-            if summary_method.name_ == 'PageRank':
-                update_time_list = []
-                acc_list = []
-                t = 0
-                num_queries_total = len(query_log)
-                t0 = time()
-                S = summary_method(KG, K, query_log[0:t+1]) # call the object as a function
-                runtime = time() - t0
-                if DETAILED_LOGGING:
-                    logging.info('\t  Time: {:.2f} seconds'.format(runtime))
-
-                # Evaluate question answering
-                total_F1, total_precision, total_recall = total_query_log_metrics(S, query_log[1: 1+query_num_per_test])
-                if DETAILED_LOGGING:
-                    logging.info('\t  Total F1/precision/recall')
-                    logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                        total_F1, total_precision, total_recall))
-
-                avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, query_log[1: 1+query_num_per_test])
-                if DETAILED_LOGGING:
-                    logging.info('\t  Average F1/precision/recall')
-                    logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                        avg_F1, avg_precision, avg_recall))
-                t+=1
-                
-                while t < num_queries_total - query_num_per_test:
-                    if (t % 1 == 0):
-                        if DETAILED_LOGGING:
-                            logging.info('Re-summarizing for timestamp: {}'.format(t))
-                            print("Re-summarizing for timestamp: ", t)
-
-                        t0 = time()
-                        S = summary_method(KG, K, query_log[0:t+1]) # call the object as a function
-                        runtime = time() - t0
-                        update_time_list.append(runtime)
-
-                        total_F1, total_precision, total_recall = total_query_log_metrics(S, query_log[t+1: t+1+query_num_per_test])
-                        if DETAILED_LOGGING:
-                            logging.info('\t  Total F1/precision/recall')
-                            logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                                total_F1, total_precision, total_recall))
-
-                        avg_F1, avg_precision, avg_recall = average_query_log_metrics(S, query_log[t+1: t+1+query_num_per_test])
-                        if DETAILED_LOGGING:
-                            logging.info('\t  Average F1/precision/recall')
-                            logging.info('\t    {:.2f}/{:.2f}/{:.2f}'.format(
-                                avg_F1, avg_precision, avg_recall))
-                        
-                        acc_list.append(avg_F1)
-                        
-                    t+=1
-
-                logging.info('\t  Ave Time on Each Training Log: {:.2f} seconds'.format(np.mean(update_time_list)))
-                logging.info('\t  Ave Ave F1 on Each Training Log: {:.2f}'.format(np.mean(acc_list)))
-
-                acc_list_pr += acc_list
-                update_time_pr += update_time_list
-
-
-                np.save(KG.user_dir + '/acc_list_pr.npy', acc_list)
-                np.save(KG.user_dir + '/time_list_pr.npy', update_time_list)
-
-
-                
-            
+def flatten_list(nested_list):
+    for item in nested_list:
+        if isinstance(item, list):
+            yield from flatten_list(item)
         else:
-            # APEX
-            if summary_method.name_ == 'APEX-N':
-                acc_list, update_time_list = APEX_naive(KG, K, query_log, query_num_per_test)
-                acc_list_apex_n += acc_list
-                update_time_apex_n += update_time_list
-            if summary_method.name_ == 'APEX': 
-                acc_list, update_time_list = APEX(KG, K, query_log, query_num_per_test)
-                acc_list_apex += acc_list
-                update_time_apex += update_time_list
+            yield item
+
+
+def sliding_window(window_size=2, training_set=None, summary=None, i=None, test_weights=None):
+    data = []
+    timesteps = sorted(training_set.keys())
+    for j in range(len(timesteps) - window_size + 1):
+        t1, t2 = timesteps[j:j + window_size]
+        if t2 <= i and i != 0:
+            t1_weight = test_weights[t1]
+            t2_weight = test_weights[t2]
+            data_t1 = np.random.choice(training_set[t1], size=int(len(training_set[t1]) * t1_weight), replace=False)
+            data_t2 = np.random.choice(training_set[t2], size=int(len(training_set[t2]) * t2_weight), replace=False)
+            combined_data = np.concatenate((data_t1, data_t2))
+            total_F1, _, _ = total_query_log_metrics(summary, combined_data)
+            data.append({"Timestep Window": f"{t1}-{t2}", "Total F1": total_F1})
+    return pd.DataFrame(data)
+
+
+def process_all_timesteps(training_set=None, summary=None, i=None, test_weights=None):
+    if training_set is None or test_weights is None:
+        print("Error: training_set and test_weights must be provided.")
+        return None
+
+    output_data = []
+    data = []
+    timesteps = sorted(training_set.keys())
+
+    for t in timesteps:
+        if t in test_weights:
+            sampled_data = np.random.choice(training_set[t], size=int(len(training_set[t]) * test_weights[t]), replace=False)
+            sampled_data = [q for q in sampled_data if isinstance(q, dict) and 'Parse' in q]
+            if not sampled_data:
+                continue
+            data.extend(sampled_data)
+
+    data = list(flatten_list(data))
+    total_F1, _, _ = total_query_log_metrics(summary, data)
+    output_data.append({"Timestep Window": f"{i}", "Total F1": total_F1})
+    return pd.DataFrame(output_data)
+
+
+##########################
+
+
+def _normalize_weights(w):
+    """Normalize a weight dict to sum to 1; handle zeros safely."""
+    if not w:
+        return {}
+    tot = sum(w.values())
+    if tot == 0:
+        return {k: 0.0 for k in w}
+    return {k: v / tot for k, v in w.items()}
+
+
+def _safe_concat_df(list_of_dfs, rename_from="Timestep Window", rename_to="Timestep", value_name="Total F1"):
+    """Concatenate small dataframes from process_all_timesteps; return empty df if none."""
+    if not list_of_dfs:
+        return pd.DataFrame(columns=[rename_to, value_name])
+    df = pd.concat(list_of_dfs, ignore_index=True)
+    if rename_from in df.columns:
+        df = df.rename(columns={rename_from: rename_to})
+    # Ensure columns exist
+    if rename_to not in df.columns:
+        df[rename_to] = pd.NA
+    if value_name not in df.columns:
+        df[value_name] = pd.NA
+    # Drop duplicates by timestep
+    if rename_to in df.columns:
+        df = df.drop_duplicates(subset=rename_to)
+    return df
+
+# --------------------- process_summary_sankofa  ---------------------
+
+
+def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr_dict, test_data,
+                            walks_runtime=None, max_triples=None,  n_priority=None):
+    """
+    Fully restored Sankofa processing:
+    - Computes Future Test F1
+    - Computes Weighted Future Test F1 (never NA)
+    - Computes runtime (walks + summary)
+    """
+
+    triples_no = {}
+    future_rows = []
+    weighted_tests = []
+    summary_runtime_rows = []
+
+    print("Summarizing for SANKOFA")
+
+    common_keys = top_k_nodes_dict.keys() & graphs.keys() & weights.keys() & test_data.keys()
+
+    for key in sorted(common_keys):
+
+        KG = graphs[key]
+        top_k_nodes = {str(n): v for n, v in top_k_nodes_dict[key].items()}
+        non_top_k_nodes = {str(n): v for n, v in global_pr_dict[key].items()}
+
+        #eliminate top-k from global pr
+        non_top_k_nodes =  {k:v for k,v in non_top_k_nodes.items() if k not in top_k_nodes}
+        print(f"Creating summary for t={key} with {len(top_k_nodes)} top-k nodes and {len(non_top_k_nodes)} non-top-k nodes.")
+
+
+        # -------- SUMMARY + RUNTIME --------
+        t0 = time.time()
+
+        S =  _SummaryGraph__(KG, top_k_nodes, non_top_k_nodes, max_triples)
+
+        t1 = time.time()
+
+        summary_runtime = t1 - t0
+        summary_runtime_rows.append({"Timestep": key, "Runtime (summary)": summary_runtime})
+        triples_no[key] = S.triple_count
+
+        print(f"Summary graph for t={key} created in {summary_runtime:.2f}s")
+
+        # PRESENT TEST F1
+        log = test_data[key]
+        total_F1, total_precision, total_recall = total_query_log_metrics(S, log)
+
+        future_rows.append({"Timestep": key, "Future Test F1": total_F1})
+
+        # HISTORICAL TESTS 
+        test_weights = weights[key]
+        total_w = sum(test_weights.values())
+        test_weights_norm = {j: test_weights[j] / total_w for j in test_weights}
+
+        df_weight = process_all_timesteps(
+            training_set=test_data,
+            summary=S,
+            i=key,
+            test_weights=test_weights_norm
+        )
+        weighted_tests.append(df_weight)
 
 
 
-def float_in_zero_one(value):
-    """Check if a float value is in [0, 1]"""
-    value = float(value)
-    if value < 0 or value > 1:
-        raise argparse.ArgumentTypeError('Value must be a float between 0 and 1')
-    return value
+    # BUILD DATAFRAMES 
+    df_future = pd.DataFrame(future_rows)
+    df_summary_rt = pd.DataFrame(summary_runtime_rows)
 
-def positive_int(value):
-    """Check if an integer value is positive"""
-    value = int(value)
-    if value < 1:
-        raise argparse.ArgumentTypeError('Value must be positive')
-    return value
+    # Weighted Future Test F1
+    if len(weighted_tests) > 0:
+        df_weighted = pd.concat(weighted_tests, ignore_index=True)
+        df_weighted = df_weighted.rename(columns={
+            "Timestep Window": "Timestep",
+            "Total F1": "Weighted Future Test F1"
+        })
+    else:
+        df_weighted = pd.DataFrame(columns=["Timestep", "Weighted Future Test F1"])
 
-def parse_args():
-    parser = argparse.ArgumentParser()
 
-    parser.add_argument('--kg', choices=list(KG_MAPPING.keys()), default='YAGO',
-            help='KG to summarize')
-    parser.add_argument('--n-queries', type=positive_int, default=100,
-            help='Number of queries to simulate per user. Default is 100.')
-    parser.add_argument('--n-topic-mids', type=positive_int, default=2,
-            help='Number of topic mids of interest per user. Default is 2.')
-    parser.add_argument('--n-topics', type=positive_int, default=3,
-            help='Number of topics to simulate per user log. '
-                 'For Freebase only. Default is 3.')
-    parser.add_argument('--n-mids-per-topic', type=positive_int, default=20,
-            help='Number of unique MIDs per topic. For Freebase only. Default is 20.')
-    parser.add_argument('--n_users', type=positive_int, default=2,
-            help='Number of users to simulate. Default is 1.')
-    parser.add_argument('--start_user', type=positive_int, default=0,
-            help='Number of users to simulate. Default is 0.')
-    parser.add_argument('--test-size', type=float_in_zero_one, default=0.5,
-            help='Percentage of queries per user to hold out for testing, '
-                 'in [0, 1]. Default is 0.5.')
-    parser.add_argument('--percent-triples', type=float_in_zero_one, default=0.001,
-            help='Ratio of number of triples of KG to use as K '
-                 '(summary constraint). Default is 0.001.')
-    parser.add_argument('--random-query-prob', type=float_in_zero_one, default=0,
-            help='Probability of users asking random queries rather '
-                 'than topic-specific ones. Default is 0.')
-    parser.add_argument('--shuffle', action='store_true',
-            help='Set this flag to true to shuffle all generated logs. Default False.')
-    # parser.add_argument('--method', nargs='+', default=['glimpse'],
-    #         choices=list(METHODS.keys()),
-    #         help='Summarization methods to call. Default is [glimpse].')
-    parser.add_argument('--method', nargs='+', default=['apex'],
-            choices=list(METHODS.keys()),   # glimpse, glimpse-2, apex, apex-n
-            help='Summarization methods to call. Default is [apex].')
-    parser.add_argument('--save-queries', action='store_true', 
-            help='Whether to save the generated queries (warning: overwrite existing saves). Default False')
-    parser.add_argument('--load-queries', action='store_true', 
-            help='Whether to load queries from dataset folder (warning: make sure dataset folder is non-empty, also make sure enough amount of queries than acquired). Default False and default is to generate new queries')
-    parser.add_argument('--query-num-per-test', type=positive_int, default=1,
-            help='Number of users to simulate. Default is 1.')
+    for df in (df_future, df_summary_rt, df_weighted):
+        if not df.empty:
+            df["Timestep"] = df["Timestep"].astype(int)
+
+    if walks_runtime is None:
+        walks_runtime = pd.DataFrame({"Timestep": sorted(common_keys),
+                                      "Runtime (walks)": [0.0]*len(common_keys)})
+
+    if "Runtime (walks)" not in walks_runtime.columns:
+        walks_runtime["Runtime (walks)"] = 0.0
+
+    # MERGE 
+    merged = walks_runtime.merge(df_summary_rt, on="Timestep", how="right")
+    merged = merged.merge(df_future, on="Timestep", how="left")
+    merged = merged.merge(df_weighted, on="Timestep", how="left")
+
+    # 
+    merged["Weighted Future Test F1"] = merged["Weighted Future Test F1"].fillna(0.0)
+
+    # TOTAL RUNTIME 
+    merged["Runtime (seconds)"] = (
+        merged["Runtime (summary)"].fillna(0.0) +
+        merged["Runtime (walks)"].fillna(0.0)
+    )
+
+    # FINAL FORMAT 
+    sankofa = merged[[
+        "Timestep",
+        "Runtime (seconds)",
+        "Future Test F1",
+        "Weighted Future Test F1"
+    ]].copy()
+
+    sankofa.to_csv("sankofa_results.csv", index=False)
+    print(sankofa)
+
+    return triples_no, sankofa
+
+
+
+# --------------------- process_summary_glimpse  ---------------------
+# 
+def run_glimpse(summary_method, graphs, triples_no_mc, training_data, test_data, weights):
+    glimpse_rows = []
+    weighted_tests = []
+
+    for t in sorted(graphs.keys() & triples_no_mc.keys() & weights.keys()):
+        KG = graphs[t]
+        K = triples_no_mc[t]
+        norm_w = _normalize_weights(weights[t])
+
+        # build merged logs (window N=2 as original)
+        if t == 0:
+            merged_logs = training_data[t]
+        else:
+            N = 2
+            keys = sorted(training_data.keys())
+            idx = keys.index(t)
+            start = max(0, idx - N + 1)
+            selected = keys[start: idx + 1]
+            merged_logs = list(flatten_list([training_data[k] for k in selected]))
+
+        t0 = time.time()
+        S = summary_method(KG, K, merged_logs)
+        run_time = time.time() - t0
+
+        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
+        glimpse_rows.append({"Timestep": t, "Glimpse Present F1": total_F1, "Runtime (seconds)": run_time})
+
+        df_w = process_all_timesteps(training_set=test_data, summary=S, i=t, test_weights=norm_w)
+        weighted_tests.append(df_w)
+
+
+    return glimpse_rows, weighted_tests
+
+
+# --------------------- process_summary_APEX  ---------------------
+def run_apex(graphs, triples_no_mc, training_data, test_data, weights):
+    apex_rows = []
+    weighted_tests = []
+
+    H = q = e = r = csr = index_list = None
+
+    for t in sorted(graphs.keys() & triples_no_mc.keys() & weights.keys()):
+        KG = graphs[t]
+        K = triples_no_mc[t]
+        test_w = weights[t]  
+
+        if t == 0:
+            P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
+        else:
+            try:
+                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+                    KG, K, training_data[t], test_data[t],
+                    t=t, H=H, q=q, e=e, r=r,
+                    csr_indirect_matrices=csr, index_list=index_list
+                )
+            except Exception:
+                pass
+                #fallback to full call if incremental fails
+                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
+        #total_F1, run_time, P = APEX_(KG, K,  training_data[t], test_data[t], t=t)
+
+        apex_rows.append({"Timestep": t, "Apex Present F1": total_F1, "Runtime (seconds)": run_time})
+        df_w = process_all_timesteps(training_set=test_data, summary=P, i=t, test_weights=_normalize_weights(test_w))
+        weighted_tests.append(df_w)
+
+
+
+    return apex_rows, weighted_tests
+
+
+# --------------------- process_summary_ISUMMARY  ---------------------
+def run_isummary(summary_method, graphs, triples_no_mc, training_data, test_data, weights):
+    isummary_rows = []
+    weighted_tests = []
+
+    for t in sorted(graphs.keys() & triples_no_mc.keys() & weights.keys()):
+        KG = graphs[t]
+        K = triples_no_mc[t]
+        norm_w = _normalize_weights(weights[t])
+
+        if t == 0:
+            t0 = time.time()
+            S = ISUMMARY(KG, K, training_data[t])
+            run_time = time.time() - t0
+        else:
+            N = 2
+            keys = sorted(training_data.keys())
+            idx = keys.index(t)
+            start = max(0, idx - N + 1)
+            selected = keys[start: idx + 1]
+            merged_logs = list(flatten_list([training_data[k] for k in selected]))
+
+            t0 = time.time()
+            S = summary_method(KG, K, merged_logs)
+            run_time = time.time() - t0
+
+        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
+        isummary_rows.append({"Timestep": t, "Isummary Present F1": total_F1, "Runtime (seconds)": run_time})
+
+        df_w = process_all_timesteps(training_set=test_data, summary=S, i=t, test_weights=norm_w)
+        weighted_tests.append(df_w)
+
+
+    return isummary_rows, weighted_tests
+
+
+# Merge present and weighted results for each method
+def _merge_present_and_weighted(present_rows, weighted_dfs, present_col_name, weighted_col_name, rename_weighted="Total F1"):
+    present_df = pd.DataFrame(present_rows).drop_duplicates(subset="Timestep") if present_rows else pd.DataFrame(columns=["Timestep", "Runtime (seconds)", present_col_name])
+    weighted_df = _safe_concat_df(weighted_dfs, rename_from="Timestep Window", rename_to="Timestep", value_name=rename_weighted)
+    if not weighted_df.empty and rename_weighted in weighted_df.columns:
+        weighted_df = weighted_df.rename(columns={rename_weighted: weighted_col_name})
+   
+    if not present_df.empty:
+        present_df["Timestep"] = present_df["Timestep"].astype(int)
+    if not weighted_df.empty and "Timestep" in weighted_df.columns:
+        weighted_df["Timestep"] = weighted_df["Timestep"].astype(int)
+
+    if not present_df.empty and not weighted_df.empty:
+        merged = pd.merge(present_df, weighted_df, on="Timestep")
+    else:
+        merged = present_df if not present_df.empty else weighted_df
+    return merged
+
+
+
+
+def process_summary_baselines(graphs, triples_no_mc, training_data, test_data, methods, weights):
+    """
+    Orchestrates GLIMPSE / APEX / ISUMMARY runs and merges results.
+    Returns: DataFrame (sota) with columns for each method.
+    """
+
+    summary_methods = [METHODS[name] for name in methods]
+
+
+    raw_results = {
+        "Glimpse": ([], []),
+        "Apex": ([], []),
+        "Isummary": ([], []),
+    }
+
+    # --- RUN METHODS ---
+    for summary_method in summary_methods:
+        name = summary_method.name_
+
+        if name.startswith("GLIMPSE") and not name.startswith("APEX"):
+            print("Summarizing for GLIMPSE")
+            rows, weighted = run_glimpse(summary_method, graphs, triples_no_mc, training_data, test_data, weights)
+            raw_results["Glimpse"][0].extend(rows)
+            raw_results["Glimpse"][1].extend(weighted)
+
+        elif name == "APEX":
+            print("Summarizing for APEX")
+            rows, weighted = run_apex(graphs, triples_no_mc, training_data, test_data, weights)
+            raw_results["Apex"][0].extend(rows)
+            raw_results["Apex"][1].extend(weighted)
+
+        elif name == "ISUMMARY":
+            print("Summarizing for ISUMMARY")
+            rows, weighted = run_isummary(summary_method, graphs, triples_no_mc, training_data, test_data, weights)
+            raw_results["Isummary"][0].extend(rows)
+            raw_results["Isummary"][1].extend(weighted)
+
+ 
+    merged_results = {}
+    for method, (present, weighted) in raw_results.items():
+        if not present:   
+            continue
+
+        merged = _merge_present_and_weighted(
+            present,
+            weighted,
+            f"{method} Present F1",
+            f"Weighted {method} F1"
+        )
+
+        if merged is None or merged.empty:
+            continue
+
+
+        merged.rename(columns={"Runtime (seconds)": f"{method} Runtime (seconds)"}, inplace=True)
+
+        print(f"{method.upper()}\n", merged)
+        merged.to_csv(f"{method.lower()}_results.csv", index=False)
+
+        merged_results[method] = merged
+
+    # --- FINAL MERGE ---
+    dfs = list(merged_results.values())
+    if not dfs:
+        print("No results produced by any summary method.")
+        return pd.DataFrame()
+
+    sota = dfs[0]
+    for df in dfs[1:]:
+        sota = pd.merge(sota, df, on="Timestep", how="inner")
+
+    return sota
+
+
+
+def extract_snapshot_number(filename):
+    base = os.path.basename(filename)
+    num_part = base.replace("snapshot_", "").replace(".nt.gz", "")
+    return int(num_part)
+
+def load_snapshots(subgraph_dir):
+    """Load all snapshots from the specified directory."""
+    graphs = {}
     
-    return parser.parse_args()
+    for i, file_name in enumerate(sorted(os.listdir(subgraph_dir))):
+        path = os.path.join(subgraph_dir, file_name)
+        KG = DBPedia(rdf_gz=path)
+        KG.load()
+        graphs[i] = KG
+    return graphs
+
+def analyze_graph_properties(graph, timestep):
+    """Analyze and print properties of the graph."""
+    G = nx.DiGraph()
+    for s, p, o in graph.triples():
+        G.add_edge(s, o, predicate=p, weight=0.01)
+    
+    
+
+    degrees = [d for _, d in G.degree()]
+    fit = powerlaw.Fit(degrees, discrete=True, verbose=False)
+    R, p = fit.distribution_compare('power_law', 'lognormal')
+    return G
+
+def generate_query_logs(graph, timestep, num_queries=200):
+    """Generate query logs for a given graph."""
+    topic_mids = random.sample(list(graph.triples_.keys()), k=15)
+    valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
+    if not valid_topic_mids:
+        print(f"No valid topic_mids found in KG for snapshot {timestep}")
+        return None
+
+    query_log = query_log_by_mids(
+        graph,
+        valid_topic_mids,
+        num_queries,
+        topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
+        shuffle=True,
+        random_query_prob=0
+    )
+    return query_log
+
+def save_or_load_query_log(query_log_file, graph, timestep):
+    """Save or load query logs from a file."""
+    if os.path.exists(query_log_file):
+        print(f"Loading query_log from {query_log_file}")
+        with open(query_log_file, "rb") as f:
+            return pickle.load(f)
+    else:
+        print(f"Generating query_log for snapshot {timestep}")
+        query_log = generate_query_logs(graph, timestep)
+        with open(query_log_file, "wb") as f:
+            pickle.dump(query_log, f)
+        return query_log
+
+def process_snapshots(subgraph_dir):
+    """Process all snapshots and generate graphs, query logs, and training/test data."""
+    graphs, training_data, test_data, queries_ = {}, {}, {}, {}
+
+    files = os.listdir(subgraph_dir)
+    snapshot_files = sorted(
+    [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
+    key=extract_snapshot_number
+        )
+
+    print("Loading all subgraph snapshots...")
+
+    for i, file_name in enumerate(snapshot_files):
+        #file = "snapshot_1.nt.gz"
+        path = os.path.join(subgraph_dir, file_name)
+        KG = DBPedia(rdf_gz=path)
+        KG.load()
+        graphs[i] = KG
+
+        query_log_file = f"query_log_snapshot_{i}.pkl"
+        #query_log_file = "query_log_snapshot_100.pkl"
+        query_log = save_or_load_query_log(query_log_file, KG, i)
+        if not query_log:
+            continue
+
+        split_idx = int(0.8 * len(query_log))
+        training_data[i] = query_log[:split_idx]
+        test_data[i] = query_log[split_idx:]
+        queries_[i] = [q['Parse']['TopicEntityMid'] for q in training_data[i]]
+
+    return graphs, training_data, test_data, queries_
 
 def main():
-    acc_list_glimpse = []
-    acc_list_apex_n = []
-    acc_list_apex = []
-    acc_list_pr = []
-    update_time_list_glimpse = []
-    update_time_apex_n = []
-    update_time_apex = []
-    update_time_pr = []
-    args = parse_args()
-    if (args.save_queries is True) and (args.load_queries is True):
-        raise NotImplementedError
+    dynagraph = {} 
+    subgraph_dir ="/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30"####"/Users/au735195/Desktop/wiki_1"############# ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
+ 
+    # Load and process snapshots
+    print("Loading all subgraph snapshots...")
+    graphs, training_data, test_data, queries_ = process_snapshots(subgraph_dir)
 
-    if (args.save_queries is True):
-        print('Warning: File Rewrite, proceed?')
-        pdb.set_trace()
+    # Analyze graph properties
+    for i, graph in graphs.items():
+        G = analyze_graph_properties(graph, i)
+        dynagraph[i] = G  
 
-    if args.kg == 'DBPedia':
-        dbpedia_dir = KG_MAPPING[args.kg]
-        for user in range(args.start_user, args.start_user + args.n_users):
-            logging.info('---Simulating user {}---'.format(user))
-            logs = dict()
-            dynamic_graph = dict()
-            for i, file_name in enumerate(sorted(os.listdir(dbpedia_dir))):
-                graph = os.path.join(dbpedia_dir, file_name)           
-                print(graph)
-                KG = DBPedia(rdf_gz=graph)
-                summary_methods = [METHODS[name] for name in args.method]
+    # Convert graphs and queries for processing
+    converted_dynagraph = []
+    for i, (timestep, graph) in enumerate(dynagraph.items()):
+        if i == 0:
+            b = 0.001
+            summary_size = int(len(graph.edges) * b) 
+            k1 = (len(graph.nodes))**2 / len(graph.edges)
+            K = int(k1 / (0.1/b)) 
+            print(f"Summary size: {summary_size}, K: {K}, k1: {k1}, DENSITY: {len(graph.edges)/ (len(graph.nodes)*(len(graph.nodes)-1))}")
 
-                # Load the KG into memory
-                logging.info('Loading {}'.format(KG.name()))
-                KG.load()
-                logging.info('Loaded {}'.format(KG.name()))
-
-                #convert into directed graph for monte carlo method
-                directed_graph = nx.DiGraph()
-
-                edges = KG.triples()
-                for s, p, o in edges:
-                    directed_graph.add_edge(s, o, predicate=p)
-
-                    directed_graph[s][o]['weight'] = 0.01
-
-                dynamic_graph[i] = directed_graph
+        # Convert the graph to the required format
+        converted_graph = {
+            int(node): {int(neighbor): float(graph[node][neighbor].get("weight", 0.0001)) 
+                        for neighbor in graph.neighbors(node)}
+            for node in graph.nodes
+        }
+        converted_dynagraph.append(converted_graph)
 
 
-                # Number of triples for summary
-                #K = int(args.percent_triples * KG.number_of_triples())
-                K = 200
-                logging.info('K = {}'.format(K))
-                KG.update_user(user)
+    converted_queries = {
+        int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
+        for timestep, query_list in queries_.items()
+    }
 
-                #logging.basicConfig(filename=KG.user_dir + '/log.log')
+    # Generate top-k summaries
+    results = walks.generate_top_k_summary(
+        num_timesteps=len(converted_dynagraph),
+        num_walks=10,
+        dynamic_graph=converted_dynagraph,
+        queries=converted_queries,
+        c=2,
+        epsilon=0.25,
+        k=K,
+        decay_rate = 0.8
+    )
 
-                if args.kg == 'Freebase':
-                    topics = random.sample(KG.topics(), k=args.n_topics)
+    # Process summaries and evaluate
+    top_k_cumsum_walks = results["top_k_cumsum_walks"]
+    weights = results["all_weights"]
+   
+    runtime_per_timestep = results["runtime_per_timestep"]
+    non_topk_global_pr =  results["global_pr"]#
+    #print(non_topk_global_pr)
 
-                    query_log = query_log_by_topics(
-                            KG, topics, args.n_mids_per_topic, args.n_queries,
-                            shuffle=args.shuffle, random_query_prob=args.random_query_prob)
-                
-                elif args.kg == 'MetaQA':
-                    args.save_queries = False
-                    args.load_queries = True
-                    query_log = []
-                    for i in range(args.n_queries):
-                        with open(KG.query_dir() + "q"+ str(i)+ ".json", "r") as f:
-                            query_log.append(json.load(f))
-
-                    logging.info('---Loaded a log of {} queries----'.format(len(query_log)))
-                
-
-                else:
-                    # topic_mids = random.sample(KG.topic_mids(), k=args.n_topic_mids)
-                    topic_mids = random.sample(list(KG.triples_.keys()), k=args.n_topic_mids)
-
-                    if args.load_queries:
-                        query_log = []
-                        for i in range(args.n_queries):
-                            with open(KG.query_dir() + "q"+ str(i)+ ".json", "r") as f:
-                                query_log.append(json.load(f))
-
-                        logging.info('---Loaded a log of {} queries----'.format(len(query_log)))
-
-                    else:
-
-                        query_log = query_log_by_mids(
-                                KG, topic_mids, args.n_queries, topic_dist=np.ones(len(topic_mids))/len(topic_mids),
-                                shuffle=args.shuffle,
-                                random_query_prob=args.random_query_prob, whether_save = args.save_queries)
-                        logging.info('---Generated a log of {} queries----'.format(len(query_log)))
-
-                logs[i] = query_log
-    
-                save_dir = KG.query_dir()
-                # if args.save_queries:
-                #     logging.info('---Saving generated queries---')
-                #     logs[i] = query_log
-                    #print(query_log)
-                training_data = dict()
-                test_data = dict()
-
-                for i,j in logs.items():
-                    log = j 
-                    random.shuffle(log)
-                    len_logs = len(log)
-                    train_size = int(0.8* len_logs)  
-
-                    training_set = log[:train_size]
-                    test_set = log[train_size:]
-                    
-                    training_data[i] = training_set
-                    test_data[i] = test_set
-                    #print(len(training_set), len(test_set), len(log))
+    runtime_df = pd.DataFrame(
+        [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
+    ).sort_values(by="Timestep")
 
 
-                answer_queries_in_log(KG, K, i, training_data, test_data, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=args.test_size, query_num_per_test=args.query_num_per_test)
+    triples_no, sankofa = process_summary_sankofa(
+        top_k_cumsum_walks,  graphs, label="Cumsum Walks", weights=weights, global_pr_dict=non_topk_global_pr,
+        test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size, n_priority=50
+    )
+    sankofa.to_csv("sankofa_results.csv", index=False)
+    print(triples_no)
 
-            if args.save_queries:
-                logging.info('---Saving generated queries---')        
-                for graph, log_ in logs.items():
-                    file_path = os.path.join(save_dir, f"q{graph}.json")
-                    print(file_path)
 
-                    #if not os.path.exists(file_path):
-                    with open(file_path, "a") as outfile:
-                        print(f"Saving query log {graph} to {file_path}")  # Debug print
-                        json.dump(log_, outfile, indent=4)
+    # sota = process_summary_baselines(
+    #     graphs, triples_no, training_data, test_data,
+    #     methods=["apex"]#, "glimpse", "apex", "isummary"]
+    #     , weights=weights
+    # )
+    # merged_df = pd.merge(sankofa, sota, on="Timestep")
+    # merged_df.to_csv("all_results.csv", index=False)
 
-            #print(logs.keys())
-            # for graph, query_log in logs.items():
-            #     file_path = os.path.join(KG.query_dir(), f"q{graph}.json")
-            #     print(file_path)
-                
-            #     #if not os.path.exists(file_path):
-            #     with open(file_path, "a") as outfile:
-            #         print(f"Saving query log {graph} to {file_path}")  # Debug print
-            #         json.dump(query_log, outfile, indent=4)
-                #else:
-                   # print(f"File {file_path} already exists! Skipping...")
-
-                        
-                    #for i in range(len(query_log)):
-                
-                    # with open(KG.query_dir() + "q"+ str(i)+ ".json", "w") as outfile:
-                    #     print(KG.query_dir()+ "q"+ str(i)+ ".json")
-                    #     json.dump(query_log, outfile, indent=4)
-
-        #answer_queries_in_log(KG, K, query_log, summary_methods, acc_list_glimpse, acc_list_apex_n, acc_list_apex, acc_list_pr, update_time_list_glimpse, update_time_apex_n, update_time_apex, update_time_pr, test_size=args.test_size, query_num_per_test=args.query_num_per_test)
-
-    # save arrays
-    DATA_DIRS = {'YAGO': YAGO_DATA_DIR, 'DBPedia': DBPEDIA_DATA_DIR, 'MetaQA': METAQA_DATA_DIR}
-    DATA_DIR = DATA_DIRS[args.kg]
-    if len(acc_list_glimpse) > 0:
-        np.save(DATA_DIR + '/acc_list_glimpse.npy', acc_list_glimpse)
-    if len(acc_list_apex_n) > 0:
-        np.save(DATA_DIR + '/acc_list_apex_n.npy', acc_list_apex_n)
-    if len(acc_list_apex) > 0:
-        np.save(DATA_DIR + '/acc_list_apex.npy', acc_list_apex)
-    if len(acc_list_pr) > 0:
-        np.save(DATA_DIR + '/acc_list_pr.npy', acc_list_pr)
-    if len(update_time_list_glimpse) > 0:
-        np.save(DATA_DIR + '/update_time_list_glimpse.npy', update_time_list_glimpse)
-    if len(update_time_apex_n) > 0:
-        np.save(DATA_DIR + '/update_time_apex_n.npy', update_time_apex_n)
-    if len(update_time_apex) > 0:
-        np.save(DATA_DIR + '/update_time_apex.npy', update_time_apex)
-    if len(update_time_pr) > 0:
-        np.save(DATA_DIR + '/update_time_pr.npy', update_time_pr)
-
-    logging.info('Shutting down...')
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -2,7 +2,6 @@
 import numpy as np
 from importlib import reload
 import urllib.request
-from bs4 import BeautifulSoup
 import os
 import bz2
 import gzip
@@ -37,14 +36,6 @@ def dbpedia_download(output_dir):
         ("3.5.1/en/skos_categories_en.nt.bz2", "categories_1.nt.bz2"),#04/2010
     ]
 
-    # data_files = [
-    #     ("3.9/en/article_categories_en.nt.bz2", "mapping_5.nt.bz2"), #09/2013
-    #     ("3.8/en/article_categories_en.nt.bz2", "mapping_4.nt.bz2"), #08/2012
-    #     ("3.7/en/article_categories_en.nt.bz2", "mapping_3.nt.bz2"), # 08/2011
-    #     ("3.6/en/article_categories_en.nt.bz2", "mapping_2.nt.bz2"), #01/20211
-    #     ("3.5.1/en/article_categories_en.nt.bz2", "mapping_1.nt.bz2"),#04/2010
-    # ]
-    # os.makedirs(output_dir, exist_ok=True)
 
     #download and rename
     print('Starting file downloads...')

@@ -1,6 +1,3 @@
-
-import random
-import numpy as np
 from collections import Counter, defaultdict
 import networkx as nx
 
@@ -14,7 +11,6 @@ def extract_entities_from_query(q):
     entities = set()
     
     try:
-        # Handle dict format with Parse section (your actual format)
         if isinstance(q, dict) and "Parse" in q:
             parse = q["Parse"]
             
@@ -31,7 +27,6 @@ def extract_entities_from_query(q):
             
             # Constraints
             for constraint in parse.get("Constraints", []):
-                # Handle different constraint formats
                 if isinstance(constraint, dict):
                     for key in ['s', 'o', 'subject', 'object']:
                         if key in constraint and constraint[key]:
@@ -45,7 +40,6 @@ def extract_entities_from_query(q):
         elif isinstance(q, (dict, list, tuple)):
             import re
             q_str = str(q)
-            # Look for patterns like "m.0123" or other entity patterns
             entity_pattern = r'm\.[a-z0-9_]+'
             entities.update(re.findall(entity_pattern, q_str))
     
@@ -126,23 +120,18 @@ def resolve_path_to_triples(G, path):
 
 def build_isummary_with_target_size(KG, query_log, s, target_triples):
     """
-    Modified iSummary that grows summary until reaching target triple count.
+   iSummary that grows summary until reaching target triple count.
     This is a departure from the original k-node approach.
-    """
-    #print(f"\nBuilding iSummary for node {s} with target size: {target_triples} triples ...")
-    
+    """    
     S = set()
     visited = {str(s)}
     
     # Filter queries mentioning s
     Qs = filter_queries_by_entities(query_log, [s])
-    #print(f"[DEBUG] Queries mentioning s={s}: {len(Qs)}")
     
     if not Qs:
-        #print("[WARNING] No queries mention the selected node.")
         return S
-    
-    # Build graph for path finding
+   
     G = nx.DiGraph()
     for s_kg, preds in KG.triples_.items():
         s_str = str(s_kg)
@@ -152,10 +141,8 @@ def build_isummary_with_target_size(KG, query_log, s, target_triples):
                 G.add_edge(s_str, o_str, predicate=p)
     
     # Instead of fixed k, we'll process nodes until we reach target size
-    # Start with a reasonable number of candidate nodes
-    candidate_nodes = select_top_nodes(Qs, max_nodes=50)  # Get top 50 candidates
-    
-    #print(f"[DEBUG] Selected {len(candidate_nodes)} candidate nodes")
+    candidate_nodes = select_top_nodes(Qs, max_nodes=50)  
+
     
     # Process nodes until we reach target size or run out of candidates
     for x in candidate_nodes:
@@ -163,16 +150,13 @@ def build_isummary_with_target_size(KG, query_log, s, target_triples):
             continue
             
         if len(S) >= target_triples:
-            #print(f"[DEBUG] Reached target size of {target_triples} triples")
             break
             
-        #print(f"[DEBUG] Processing candidate node: {x}, current triples: {len(S)}")
         selected_path = []
         all_paths = []
         
-        # Find paths from visited nodes to x
+
         for y in list(visited):
-            # Filter queries mentioning both x and y
             Qsxy = filter_queries_by_entities(Qs, [x, y])
             
             if not Qsxy:
@@ -197,25 +181,19 @@ def build_isummary_with_target_size(KG, query_log, s, target_triples):
         
         # Add path to summary if found
         if selected_path:
-            #print(f"[DEBUG] Selected path for {x}: {selected_path}")
             visited.add(x)
             path_triples = resolve_path_to_triples(G, selected_path)
             
             # Check if adding these triples would exceed our target
             if len(S) + len(path_triples) > target_triples:
-                # Add only as many as needed to reach target
                 remaining = target_triples - len(S)
                 if remaining > 0:
                     # Take first 'remaining' triples from the path
                     triples_to_add = set(list(path_triples)[:remaining])
                     S.update(triples_to_add)
-                    #print(f"[DEBUG] Added {len(triples_to_add)} triples (partial path to reach target)")
                 break
             else:
                 S.update(path_triples)
-                #print(f"[DEBUG] Added {len(path_triples)} triples from path")
-    
-    #print(f"[DEBUG] Final summary for node {s}: {len(S)} triples")
     return S
 
 
@@ -229,7 +207,7 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
         entities = extract_entities_from_query(q)
         all_query_entities.update(entities)
     
-    print(f"\n[INFO] Found {len(all_query_entities)} unique entities in queries")
+    #print(f"\n[INFO] Found {len(all_query_entities)} unique entities in queries")
     
     # Build graph once to check node existence
     G = nx.DiGraph()
@@ -243,17 +221,13 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
     # Filter entities that exist in KG AND in the graph we built
     valid_entities = []
     for entity in all_query_entities:
-        # Check if entity exists in our graph
         if entity in G:
             valid_entities.append(entity)
         else:
             pass
-            #print(f"[DEBUG] Entity {entity} not found in graph, skipping")
-    
-    #print(f"[INFO] {len(valid_entities)} entities exist in graph (from {len(all_query_entities)} total)")
+
     
     if not valid_entities:
-        #print("[WARNING] No valid entities found for summarization")
         return set()
     
     # Calculate target size per entity
@@ -266,8 +240,7 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
     
     total_freq = sum(entity_freq.values())
     all_summary_triples = set()
-    
-    #print(f"[INFO] Building global summary with target {target_triples} triples...")
+
     
     for i, (entity, freq) in enumerate(entity_freq.most_common()):
         if len(all_summary_triples) >= target_triples:
@@ -275,20 +248,13 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
             
         entity_share = max(1000, int((freq / total_freq) * target_triples))
         
-        # print(f"\nProcessing entity {i+1}/{len(valid_entities)}: {entity} "
-        #       f"(freq: {freq}, target share: {entity_share} triples)")
-        
+
         try:
             entity_summary = build_isummary_with_target_size(KG, query_log, entity, entity_share)
             all_summary_triples.update(entity_summary)
         except Exception as e:
-            #print(f"[ERROR] Failed to build summary for {entity}: {e}")
             continue
         
-        # if (i + 1) % 5 == 0:
-        #     print(f"  Progress: {i + 1}/{len(valid_entities)} entities, "
-        #           f"{len(all_summary_triples)}/{target_triples} triples")
-    
     return all_summary_triples
 
 
@@ -338,11 +304,11 @@ def get_extended_triples(G, path, max_triples=10):
         if len(triples) >= max_triples:
             break
         # Add some outgoing edges
-        for succ in G.successors(node)[:2]:  # First 2 successors
+        for succ in G.successors(node)[:2]:  
             p = G[node][succ]["predicate"]
             triples.add((node, p, succ))
         # Add some incoming edges
-        for pred in G.predecessors(node)[:2]:  # First 2 predecessors
+        for pred in G.predecessors(node)[:2]:  
             p = G[pred][node]["predicate"]
             triples.add((pred, p, node))
     return triples
@@ -421,7 +387,7 @@ class SummaryDBPedia:
         return self.relations_
 
 
-def ISUMMARY(KG, target_triples,  query_log):#, num_topic_mids=5, num_queries=200):
+def ISUMMARY(KG, target_triples,  query_log):
 
     all_summary_triples = build_global_isummary_with_target_size(KG, target_triples,query_log)
 
@@ -432,9 +398,9 @@ def ISUMMARY(KG, target_triples,  query_log):#, num_topic_mids=5, num_queries=20
     # Create and evaluate summary
     summary = SummaryDBPedia(all_summary_triples, KG)
     
-    print(f"Summary stats: {summary.number_of_triples()} triples, "
-          f"{summary.number_of_entities()} entities, "
-          f"{summary.number_of_relations()} relations")
+    #print(f"Summary stats: {summary.number_of_triples()} triples, "
+    #      f"{summary.number_of_entities()} entities, "
+     #     f"{summary.number_of_relations()} relations")
 
 
     return summary

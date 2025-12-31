@@ -110,8 +110,9 @@ MC_CompletePath_FromWalks(
 // ===============================================================
 inline std::unordered_map<int, double>
 MC_CompletePath_StopAtDangling_FromWalks(
-    const std::unordered_map<int, std::vector<std::vector<std::string>>>& processed_R,
-    int n, int len_R)
+    const std::unordered_map<int, std::vector<std::vector<std::string>>>& processed_R)
+   // int n, int len_R
+   
 {
     std::unordered_map<int, double> counts;
     double total_visits = 0.0;
