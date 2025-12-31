@@ -1,8 +1,6 @@
 
-"""
-
-
-- Runs your main script N_RUNS times.
+"""Multi-run script to execute main.py multiple times,
+- Runs the main script N_RUNS times.
 - Deletes any existing query files BEFORE each run to force regeneration.
 - Saves each run's outputs (CSV + PKL) into multi_runs/run_{i}/
 - Computes averaged numeric results across all runs at the end.
@@ -16,7 +14,7 @@ import pandas as pd
 import sys
 
 # ---------- CONFIG ----------
-NUM_RUNS = 5
+NUM_RUNS = 1
 PARENT_DIR = Path("multi_runs")
 ORIGINAL_SCRIPT = "main.py"   
 PYTHON_BIN = sys.executable        
@@ -31,10 +29,9 @@ QUERY_PATTERNS_TO_DELETE = [
 
 
 CSV_PATTERNS_TO_COLLECT = [
-    "*.csv"   # collect all csvs produced by original script;
+    "*.csv"   
 ]
 
-# PKL patterns to collect after each run (so each run keeps its queries)
 PKL_PATTERNS_TO_COLLECT = [
     "*.pkl"
 ]
@@ -90,7 +87,7 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
 
 
-        removed = remove_matching_files(QUERY_PATTERNS_TO_DELETE, directory=".")#delete existing query files
+        removed = remove_matching_files(QUERY_PATTERNS_TO_DELETE, directory=".")
         if removed:
             print(f"Deleted {len(removed)} existing query files before run {r}.")
         else:

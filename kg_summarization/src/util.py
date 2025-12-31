@@ -19,10 +19,6 @@ output_dir = "../PKG_EXP/DBpedia/dbpedia_files"
 output_new = "../PKG_EXP/DBpedia/dbpedia_subgraphs"
 output_int = "../PKG_EXP/DBpedia/dbpedia_subgraphs_intall"
 
-# output_dir = "../PKG_EXP/DBpedia/dbpedia_files_mapping"
-# output_new = "../PKG_EXP/DBpedia/dbpedia_subgraphs_mapping"
-# output_int = "../PKG_EXP/DBpedia/dbpedia_subgraphs_article_int4"
-
 
 #mappingbased_properties_en.nt
 def dbpedia_download(output_dir):

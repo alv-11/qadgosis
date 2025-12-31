@@ -1,0 +1,95 @@
+
+import pandas as pd
+#from collections import Counter
+#from src.base import DBPedia
+from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa, process_summary_baselines
+import src.qadgosis.sankofa  as walks
+import sys
+from pathlib import Path
+run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
+
+
+
+
+
+
+def main():
+    dynagraph = {} 
+    subgraph_dir ="/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30"####"/Users/au735195/Desktop/wiki_1"############# ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
+ 
+    # Load and process snapshots
+    print("Loading all subgraph snapshots...")
+    graphs, training_data, test_data, queries_ = process_snapshots(subgraph_dir)
+
+    # Analyze graph properties
+    for i, graph in graphs.items():
+        G = analyze_graph_properties(graph, i)
+        dynagraph[i] = G  
+
+    # Convert graphs and queries for processing
+    converted_dynagraph = []
+    for i, (timestep, graph) in enumerate(dynagraph.items()):
+        if i == 0:
+            b = 0.001
+            summary_size = int(len(graph.edges) * b) 
+            k1 = (len(graph.nodes))**2 / len(graph.edges)
+            K = int(k1 / (0.1/b)) 
+            print(f"Summary size: {summary_size}, K: {K}, k1: {k1}, DENSITY: {len(graph.edges)/ (len(graph.nodes)*(len(graph.nodes)-1))}")
+
+        # Convert the graph to the required format
+        converted_graph = {
+            int(node): {int(neighbor): float(graph[node][neighbor].get("weight", 0.0001)) 
+                        for neighbor in graph.neighbors(node)}
+            for node in graph.nodes
+        }
+        converted_dynagraph.append(converted_graph)
+
+
+    converted_queries = {
+        int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
+        for timestep, query_list in queries_.items()
+    }
+
+    # Generate top-k summaries
+    results = walks.generate_top_k_summary(
+        num_timesteps=len(converted_dynagraph),
+        num_walks=10,
+        dynamic_graph=converted_dynagraph,
+        queries=converted_queries,
+        c=2,
+        epsilon=0.25,
+        k=K,
+        decay_rate = 0.8
+    )
+
+    # Process summaries and evaluate
+    top_k_cumsum_walks = results["top_k_cumsum_walks"]
+    weights = results["all_weights"]
+   
+    runtime_per_timestep = results["runtime_per_timestep"]
+    non_topk_global_pr =  results["global_pr"]#
+ 
+
+    runtime_df = pd.DataFrame(
+        [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
+    ).sort_values(by="Timestep")
+
+
+    triples_no, sankofa = process_summary_sankofa(
+        top_k_cumsum_walks,  graphs, label="Cumsum Walks", weights=weights, global_pr_dict=non_topk_global_pr,
+        test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size
+    )
+    sankofa.to_csv("sankofa_results.csv", index=False)
+    print(triples_no)
+
+
+    # sota = process_summary_baselines(
+    #     graphs, triples_no, training_data, test_data,
+    #     methods=["apex"]#, "glimpse", "apex", "isummary"]
+    #     , weights=weights
+    # )
+    # merged_df = pd.merge(sankofa, sota, on="Timestep")
+    # merged_df.to_csv("all_results.csv", index=False)
+
+if __name__ == "__main__":
+    main()
