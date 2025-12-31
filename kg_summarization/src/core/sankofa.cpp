@@ -341,11 +341,6 @@ vector<int> compute_personalized_pagerank(int w, int L, double epsilon,
         walk.push_back(current);
     }
     
-    // Print the length of the walk
-    cout << "Length of walk: " << walk.size() << endl;
-    //std::cout << "Length of walk: " << walk.size() << std::endl;
-    
-
     return walk;
 }
 
@@ -375,27 +370,7 @@ unordered_map<int, double> calculate_top_k_cumulative(const vector<int> &walk,
     return top_k;
 }
 
-std::unordered_map<int, std::unordered_map<int, int>> compute_query_entity_frequencies_by_timestep(
-    const std::unordered_map<int, std::unordered_map<int, int>>& query_log) {
-    
-    // Resulting map: {timestep: {entity_id: frequency}}
-    std::unordered_map<int, std::unordered_map<int, int>> freq_by_timestep;
 
-    // Iterate over timesteps and their queries
-    for (const auto& [timestep, queries] : query_log) {
-        std::unordered_map<int, int> timestep_counter;
-
-        // Count frequencies of entity IDs
-        for (const auto& [query_id, entity_id] : queries) {
-            timestep_counter[entity_id]++;
-        }
-
-        // Store the counter for the current timestep
-        freq_by_timestep[timestep] = timestep_counter;
-    }
-
-    return freq_by_timestep;
-}
 
 std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_(
     const std::vector<int>& walk,
@@ -544,10 +519,6 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 
 
 
-
-
-
-
 //    # Step B: π(u,v) approximated by cumulative counts normalized
     std::unordered_map<int, double> pi_u;
     double total_cumulative = 0.0;
@@ -555,7 +526,6 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
     for (const auto& [node, value] : cumulative_counts) {
         pi_u[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
     }
-
 
 
 
@@ -584,25 +554,13 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
     //double fallback = 0;  // negligible, avoids exact zero
     std::vector<std::pair<int, double>> weighted_scores;
     std::vector<std::pair<int, double>> weighted_scores_others;
-    std::cout << "MC PageRank size at timestep "  ": " << pi_v.size() << std::endl;
     for (const auto& [node, val] : cumulative_counts) {
 
-        //double pu = pi_u[node];       // big walk importance
-        double puv = pi_uv_norm[node];     // co-occurrence weight
-        double pv = pi_v[node];       // global popularity
+  
+        double puv = pi_uv_norm[node];     // ppr weight
+        double pv = pi_v[node];       // global weight
 
-        
 
-        // //double pu  = (pi_u.find(node)  != pi_u.end())  ? pi_u.at(node)  : fallback;
-       
-        
-        
-
-        // //double puv = (pi_uv_norm.find(node) != pi_uv_norm.end()) ? pi_uv_norm.at(node) : fallback;
-        // // double pv  = (pi_v.find(node)  != pi_v.end())  ? pi_v.at(node)  : fallback;
-
-        // // //double weight = pu * puv * pv;
-        // //double weight = puv * pv; // omit pu for now
         double alpha = 0.25;
         double weight = (1.0 - alpha) * puv + alpha * pv;
         
@@ -630,10 +588,6 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 
   
 } 
-
-    // Sort nodes by weight
-    // std::sort(weighted_scores.begin(), weighted_scores.end(), 
-    //     [](const auto& a, const auto& b) { return a.second > b.second; });
 
     // 5. Select top-k nodes
     std::unordered_map<int, double> top_k;
@@ -668,29 +622,8 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
     result.individual_weights = std::move(individual_weights);
     result.nontop_k = std::move(nontop_k);
     return result;
-    //return {top_k, individual_weights, pi_v};
+    
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -708,14 +641,8 @@ TopKSummaryWithWeights generate_top_k_summary(
     TopKSummary summary;
     std::unordered_map<int, std::unordered_map<int, double>> weights; // Declare weights
     std::unordered_map<int, double> runtime_per_timestep; // Dictionary to store runtimes
-
-    //std::unordered_map<int, int> cumCounts;  // cumulative counts for nodes
     std::unordered_map<int, double> cumCounts;
-
     std::unordered_map<int, std::unordered_map<int, int>> counters;  // counters for each timestep
-
-    auto query_freqs = compute_query_entity_frequencies_by_timestep(queries);
-    //int total_R = 0;
 
 
     // Result per timestep
@@ -733,7 +660,7 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
 
-    //std::unordered_map<int, std::unordered_map<int, double>> accumulated_graph;
+
 
     for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
         cout << "Processing timestep " << t << endl;
@@ -751,13 +678,9 @@ TopKSummaryWithWeights generate_top_k_summary(
         }
         int n = nodes_set.size();
         int L = calculate_required_walk_length(c, epsilon, k, n);
-        //int walk_length = static_cast<int>(std::round(1.0 / epsilon));
-        //int walk_length = static_cast<int>(std::round(10 * epsilon));
 
 
         int walk_length = 5;
-        cout << "average walk length " << t << ": " << walk_length << endl;
-        cout << "Required length of PPR walk " << t << ": " << L << endl;
 
         // Preprocess (we already have weighted edges)
         Graph_ weighted_graph = graph_changes_result.snapshot;
@@ -771,7 +694,7 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
         } else {
-            //R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
+
             R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
             summary.random_walks[t] = R;
         }
@@ -779,7 +702,6 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
         chrono::duration<double> elapsed_update = end - start;
-        //cout << "elapsed time walk update for timestep " << t << ": " << elapsed_update.count() << " seconds" << endl;
 
 
         // Create a directed graph for the walk process
@@ -794,7 +716,6 @@ TopKSummaryWithWeights generate_top_k_summary(
   
         // Process the random walk results
         auto processed_R = process_walk_results(R.precomputed_walks);
-        std::cout << "Processed R size at timestep " << t << ": " << processed_R.size() << std::endl;
         processed_R_per_t.push_back(processed_R);
 
 
@@ -817,15 +738,8 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
         // Calculate top-k cumulative wi
-        //auto top_k_result = calculate_top_k_cumulative_with_weights_oracle(walk, cumCounts, k, t, counters, personalizedoracle, oracle, decay_rate, num_timesteps, n);
         auto top_k_result = calculate_top_k_cumulative_with_weights_new(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c);
-        //auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n);
-        //auto top_k_result = calculate_top_k_cumulative_with_weights_(walk, cumCounts, k, t, counters, decay_rate, num_timesteps, n);
         
-        
-        
-
- 
 
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
         summary.global_pr[t] = top_k_result.nontop_k;
@@ -834,11 +748,9 @@ TopKSummaryWithWeights generate_top_k_summary(
         auto time_end = chrono::high_resolution_clock::now();
         chrono::duration<double> elapsed_topk = time_end - time_start;
 
-        //cout << "elapsed time taken for timestep " << t << ": " << elapsed_topk.count() << " seconds" << endl;
 
         auto total_end = chrono::high_resolution_clock::now();
         chrono::duration<double> total_elapsed = total_end - total_start;
-        cout << "Total time taken for timestep " << t << ": " << total_elapsed.count() << " seconds" << endl;
 
         // Store runtime in dictionary
         runtime_per_timestep[t] = total_elapsed.count();
@@ -847,38 +759,6 @@ TopKSummaryWithWeights generate_top_k_summary(
     // Return both summary, weights, and runtime dictionary
     return {summary, weights, runtime_per_timestep}; // Updated return statement
 }
-
-// Dummy pagerank: for each snapshot, assign a random score to nodes (ignoring the dummy nodes)
-// and output the top–k nodes.
-unordered_map<int, unordered_map<int, double>> pagerank(const vector<Graph_> &dynamic_graph,
-                                                         const unordered_map<int, unordered_map<int,int>> &queries,
-                                                         int k) {
-    unordered_map<int, unordered_map<int, double>> top_k_power;
-    int timesteps = dynamic_graph.size();
-    for (int t = 0; t < timesteps; t++){
-        cout << "Pagerank Timestep " << t << endl;
-        auto res = personalized_graph(dynamic_graph[t], queries.at(t), t);
-        unordered_map<int, double> scores;
-        for (const auto &p : res.snapshot) {
-            int node = p.first;
-            // Exclude dummy node (dummy nodes are in a defined range here).
-            if (node >= 123456789 && node < 123456789 + 100)
-                continue;
-            scores[node] = ((double) rand() / RAND_MAX);
-        }
-        vector<pair<int, double>> vec(scores.begin(), scores.end());
-        sort(vec.begin(), vec.end(), [](auto &a, auto &b){
-            return a.second > b.second;
-        });
-        unordered_map<int, double> top_k_nodes;
-        for (int i = 0; i < min(k, (int)vec.size()); i++){
-            top_k_nodes[vec[i].first] = vec[i].second;
-        }
-        top_k_power[t] = top_k_nodes;
-    }
-    return top_k_power;
-}
-
 
 
 // Wrap generate_top_k_summary so that it can be called from Python.

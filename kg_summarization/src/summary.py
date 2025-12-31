@@ -6,8 +6,6 @@ import math
 from src.base import KnowledgeGraph
 import os
 import time
-import random
-import numpy as np
 import pandas as pd
 import networkx as nx
 import powerlaw
@@ -18,7 +16,6 @@ from src.isummary import ISUMMARY
 from src.metrics import total_query_log_metrics
 from src.apex import APEX
 import pickle
-
 
 
 
@@ -261,7 +258,6 @@ class SummaryGraph(KnowledgeGraph):
             if not fallback:
                 break
         fallback_end = time.time()
-        print("Fallback time:", fallback_end - fallback_start)
 
     # ---------------------------
     # Batched addition
@@ -416,7 +412,6 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
     weighted_tests = []
     summary_runtime_rows = []
 
-    print("Summarizing for SANKOFA")
 
     common_keys = top_k_nodes_dict.keys() & graphs.keys() & weights.keys() & test_data.keys()
 
@@ -428,7 +423,6 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
 
         #eliminate top-k from global pr
         non_top_k_nodes =  {k:v for k,v in non_top_k_nodes.items() if k not in top_k_nodes}
-        print(f"Creating summary for t={key} with {len(top_k_nodes)} top-k nodes and {len(non_top_k_nodes)} non-top-k nodes.")
 
 
         # -------- SUMMARY + RUNTIME --------
@@ -442,7 +436,6 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
         summary_runtime_rows.append({"Timestep": key, "Runtime (summary)": summary_runtime})
         triples_no[key] = S.triple_count
 
-        print(f"Summary graph for t={key} created in {summary_runtime:.2f}s")
 
         # PRESENT TEST F1
         log = test_data[key]

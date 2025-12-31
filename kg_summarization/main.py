@@ -30,7 +30,7 @@ def main():
             summary_size = int(len(graph.edges) * b) 
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
-            print(f"Summary size: {summary_size}, K: {K}, k1: {k1}, DENSITY: {len(graph.edges)/ (len(graph.nodes)*(len(graph.nodes)-1))}")
+            print(f"Summary triple size: {summary_size}")
 
         # Convert the graph to the required format
         converted_graph = {
@@ -45,7 +45,8 @@ def main():
         int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
         for timestep, query_list in queries_.items()
     }
-
+    
+    print("Summarizing for SANKOFA")
     # Generate top-k summaries
     results = walks.generate_top_k_summary(
         num_timesteps=len(converted_dynagraph),
@@ -79,13 +80,13 @@ def main():
     print(triples_no)
 
 
-    # sota = process_summary_baselines(
-    #     graphs, triples_no, training_data, test_data,
-    #     methods=["apex"]#, "glimpse", "apex", "isummary"]
-    #     , weights=weights
-    # )
-    # merged_df = pd.merge(sankofa, sota, on="Timestep")
-    # merged_df.to_csv("all_results.csv", index=False)
+    sota = process_summary_baselines(
+        graphs, triples_no, training_data, test_data,
+        methods=["glimpse"]#, "glimpse", "apex", "isummary"]
+        , weights=weights
+    )
+    merged_df = pd.merge(sankofa, sota, on="Timestep")
+    merged_df.to_csv("all_results.csv", index=False)
 
 if __name__ == "__main__":
     main()
