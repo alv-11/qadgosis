@@ -1,7 +1,5 @@
-#ifndef MAINWRAP_H
-#define MAINWRAP_H
-
-#include "shared.h"  // Include shared structures
+#ifndef SANKOFA_H
+#define SANKOFA_H
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -18,6 +16,18 @@
 #include <iomanip>
 
 
+// Random walk result structure
+struct RandomWalkResult {
+    std::unordered_map<int, std::vector<std::vector<int>>> precomputed_walks;
+};
+
+//Graph changes structure
+struct GraphChanges {
+    std::unordered_set<int> nodes_added;
+    std::unordered_set<int> nodes_removed;
+    std::set<std::pair<int, int>> edges_added;
+    std::set<std::pair<int, int>> edges_removed;
+};
 
 // Structure to hold the top-k summary.
 struct TopKSummary {
@@ -55,7 +65,7 @@ std::vector<int> compute_personalized_pagerank(
     const std::unordered_map<int, std::unordered_map<int, double>>& graph
 );
 
-#endif
+
 
 using Map = std::unordered_map<int, double>;
 
@@ -64,3 +74,7 @@ struct TopKResult {
     Map individual_weights;
     Map nontop_k;
 };
+
+
+
+#endif // SANKOFA_H

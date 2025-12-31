@@ -4,5 +4,5 @@
 *.gz
 *.pkl
 *.nt
-PKG_EXP/DBpedia/dbpedia_files/
+files/DBP/
 git clone https://amabainson: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@github.com/amabainson/qadgosis.git
