@@ -22,5 +22,6 @@ To compile the C++ code, navigate to `src/qadgsis` and run:
 Finally return to the main directory `kg_cplusplus` and run:
 
 `python3 montecarlo.py`
+for a single run of the alogrithms use main.py
 
 output for simulate.py = multi_runs with a spearte direcoty for each run
