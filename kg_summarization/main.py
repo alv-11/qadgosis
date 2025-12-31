@@ -1,14 +1,10 @@
 
 import pandas as pd
-#from collections import Counter
-#from src.base import DBPedia
 from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa, process_summary_baselines
-import src.qadgosis.sankofa  as walks
+import src.core.sankofa  as walks
 import sys
 from pathlib import Path
 run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
-
-
 
 
 
@@ -17,7 +13,7 @@ def main():
     dynagraph = {} 
     subgraph_dir ="/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30"####"/Users/au735195/Desktop/wiki_1"############# ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
  
-    # Load and process snapshots
+
     print("Loading all subgraph snapshots...")
     graphs, training_data, test_data, queries_ = process_snapshots(subgraph_dir)
 
@@ -53,7 +49,7 @@ def main():
     # Generate top-k summaries
     results = walks.generate_top_k_summary(
         num_timesteps=len(converted_dynagraph),
-        num_walks=10,
+        num_walks=2,
         dynamic_graph=converted_dynagraph,
         queries=converted_queries,
         c=2,

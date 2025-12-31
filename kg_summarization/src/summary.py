@@ -10,7 +10,6 @@ import random
 import numpy as np
 import pandas as pd
 import networkx as nx
-#from collections import Counter
 import powerlaw
 from src.base import DBPedia
 from src.user import query_log_by_mids
@@ -802,14 +801,12 @@ def process_snapshots(subgraph_dir):
     print("Loading all subgraph snapshots...")
 
     for i, file_name in enumerate(snapshot_files):
-        #file = "snapshot_1.nt.gz"
         path = os.path.join(subgraph_dir, file_name)
         KG = DBPedia(rdf_gz=path)
         KG.load()
         graphs[i] = KG
 
         query_log_file = f"query_log_snapshot_{i}.pkl"
-        #query_log_file = "query_log_snapshot_100.pkl"
         query_log = save_or_load_query_log(query_log_file, KG, i)
         if not query_log:
             continue

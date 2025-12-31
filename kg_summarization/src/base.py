@@ -10,7 +10,7 @@ from collections import defaultdict
 from scipy.sparse import csr_matrix
 
 from .algorithms import query_vector, random_walk_with_restart
-from .path import DBPEDIA_DATA_DIR, YAGO_DATA_DIR, METAQA_DATA_DIR, METAQA_DATA_DIR_ABLATION, ENCODING
+from .path import DBPEDIA_DATA_DIR, ENCODING#, YAGO_DATA_DIR, METAQA_DATA_DIR, METAQA_DATA_DIR_ABLATION,
 
 FREEBASE_DATA_DIR = ''
 
@@ -596,7 +596,7 @@ class DBPedia(KnowledgeGraph):
         :param mid_dir: directory where lists of query IDs by MID are stored
         """
         super().__init__()
-        print(DBPEDIA_DATA_DIR)
+        #print(DBPEDIA_DATA_DIR)
         self.DBPEDIA_DATA_DIR_query = DBPEDIA_DATA_DIR + '/queries'
         self.initial_query_dir = query_dir
         self.initial_mid_dir = mid_dir
