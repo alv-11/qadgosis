@@ -8,7 +8,6 @@ import os
 import time
 import pandas as pd
 import networkx as nx
-import powerlaw
 from src.base import DBPedia
 from src.user import query_log_by_mids
 from src.glimpse import SummaryMethod, GLIMPSE
@@ -20,9 +19,9 @@ import pickle
 
 
 
-def weighted_topk(items, weights, k):
+def weighted_sampling(items, weights, k):
     """
-    ES (Efraimidis–Spirakis) weighted top-k sampling without replacement.
+    ES (Efraimidis–Spirakis) weighted sampling without replacement.
     """
 
     n = len(weights)
@@ -71,7 +70,7 @@ class SummaryGraph(KnowledgeGraph):
         cand, w = self._compute_boundary_candidates()
 
         remaining = max_triples - self.triple_count
-        self.random_padding_order = weighted_topk(cand, w, remaining)
+        self.random_padding_order = weighted_sampling(cand, w, remaining)
         self.random_padding_index = 0
 
         self._build_summary()
@@ -301,7 +300,7 @@ class SummaryGraph(KnowledgeGraph):
         if not cand:
             return
 
-        selected = weighted_topk(cand, w, remaining)
+        selected = weighted_sampling(cand, w, remaining)
 
         for triple in selected:
             if self._limit_reached():
@@ -741,11 +740,6 @@ def analyze_graph_properties(graph, timestep):
     for s, p, o in graph.triples():
         G.add_edge(s, o, predicate=p, weight=0.01)
     
-    
-
-    degrees = [d for _, d in G.degree()]
-    fit = powerlaw.Fit(degrees, discrete=True, verbose=False)
-    R, p = fit.distribution_compare('power_law', 'lognormal')
     return G
 
 
@@ -770,16 +764,17 @@ def generate_query_logs(graph, timestep, num_queries=200):
 
 def save_or_load_query_log(query_log_file, graph, timestep):
     """Save or load query logs from a file."""
+
     if os.path.exists(query_log_file):
-        print(f"Loading query_log from {query_log_file}")
         with open(query_log_file, "rb") as f:
             return pickle.load(f)
     else:
-        print(f"Generating query_log for snapshot {timestep}")
         query_log = generate_query_logs(graph, timestep)
         with open(query_log_file, "wb") as f:
             pickle.dump(query_log, f)
         return query_log
+    
+
     
 
 def process_snapshots(subgraph_dir):
@@ -809,5 +804,7 @@ def process_snapshots(subgraph_dir):
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
         queries_[i] = [q['Parse']['TopicEntityMid'] for q in training_data[i]]
-
+    
+    action = "Loaded existing" if os.path.exists(query_log_file) else "Generated new"
+    print(f"{action} query_logs")
     return graphs, training_data, test_data, queries_

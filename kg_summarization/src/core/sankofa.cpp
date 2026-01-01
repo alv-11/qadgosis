@@ -381,7 +381,8 @@ TopKResult calculate_top_k_cumulative_with_weights(
     double decay_rate = 0.38,
     int window_size = 5,
     int n = 0,             // total number of nodes,
-    int c = 2
+    int c = 2,
+    double epsilon = 0.25
     
 
     ) {
@@ -462,7 +463,7 @@ TopKResult calculate_top_k_cumulative_with_weights(
         double pv = pi_v[node];       // global weight
 
 
-        double alpha = 0.25;
+        double alpha = epsilon;
         double weight = (1.0 - alpha) * puv + alpha * pv;
         
         
@@ -479,7 +480,7 @@ TopKResult calculate_top_k_cumulative_with_weights(
 
         double pv = pi_v[node];       // global popularity
 
-        double alpha = 0.25;
+        double alpha = epsilon;
         double weight_others = (1.0 - alpha) * pu + alpha * pv;
         //double weight_others = pu;
         weighted_scores_others.emplace_back(node, weight_others);
@@ -625,7 +626,7 @@ TopKSummaryWithWeights generate_top_k_summary(
         auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);
 
         // Calculate top-k cumulative wi
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c);
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c, epsilon);
     
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
         summary.global_pr[t] = top_k_result.nontop_k;

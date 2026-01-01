@@ -11,7 +11,7 @@ run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
 def main():
     dynagraph = {} 
-    subgraph_dir ="/Users/au735195/Desktop/dbp"#"/Users/au735195/Downloads/KG_IMDB30"####"/Users/au735195/Desktop/wiki_1"############# ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
+    subgraph_dir ="/Users/au735195/Desktop/dbp"##"/Users/au735195/Downloads/KG_IMDB30"#####"/Users/au735195/Desktop/wiki_1"############# ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
  
 
     print("Loading all subgraph snapshots...")
@@ -26,7 +26,7 @@ def main():
     converted_dynagraph = []
     for i, (timestep, graph) in enumerate(dynagraph.items()):
         if i == 0:
-            b = 0.001
+            b = 0.0001
             summary_size = int(len(graph.edges) * b) 
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
@@ -87,7 +87,6 @@ def main():
     # )
     # merged_df = pd.merge(sankofa, sota, on="Timestep")
     # merged_df.to_csv("all_results.csv", index=False)
-    #print("Summarization and evaluation completed. Results saved to 'all_results.csv'.")
 
 if __name__ == "__main__":
     main()
