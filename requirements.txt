@@ -1,8 +1,5 @@
-networkx==3.3
 networkx==3.4.2
 numpy==2.4.0
 pandas==2.3.3
+scipy==1.13.1
 pybind11==2.13.6
-scipy==1.16.3
-setuptools==59.6.0
-setuptools==65.5.0
