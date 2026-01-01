@@ -11,9 +11,8 @@ run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
 def main():
     dynagraph = {} 
-    subgraph_dir ="/Users/au735195/Desktop/dbp"##"/Users/au735195/Downloads/KG_IMDB30"#####"/Users/au735195/Desktop/wiki_1"############# ###"#../PKG_EXP/DBpedia/dbpedia_subgraphs_intall" ##" "/Users/au735195/Downloads/KG_snapshots"#
+    subgraph_dir ="data/dbp"
  
-
     print("Loading all subgraph snapshots...")
     graphs, training_data, test_data, queries_ = process_snapshots(subgraph_dir)
 

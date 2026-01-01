@@ -3,8 +3,10 @@ Online Query-aware Dynamic Graph Summaries
 
 
 ## Data
-The dataset is available 
+The datasets are available for download
 [here](https://drive.google.com/drive/folders/1PVlh5KGdQ4qkyEzSnDTCYGmXRuMGwgCT?usp=sharing). 
+
+Unzip and move each dataset to `kg_summarization/data/` and update the path in `main.py`
 
 
 ## C++
