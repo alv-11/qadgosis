@@ -1,5 +1,5 @@
 # SANKOFA
-Query-aware Online Incremental Graph Summaries
+Online Query-aware Dynamic Graph Summaries
 
 
 ## Data
