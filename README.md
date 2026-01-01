@@ -1,16 +1,14 @@
 # SANKOFA
 Query-aware Online Incremental Graph Summaries
 
-I created new directories for the code so I don't mix things up. `original` is the original code on the synthetic graph, `kg_python` is the code applied to KGs and `kg_cplusplus` is the C++ code applied to KGs.
 
-To run the code for SANKOFA, run the following command:
+## Data
+The dataset is available 
+[here](https://drive.google.com/drive/folders/1PVlh5KGdQ4qkyEzSnDTCYGmXRuMGwgCT?usp=sharing). 
 
 
-### 3. kg_cplusplus
-To create  an int version of the graph which is required for the C++ code, run:
-`python3 src/util.py`
-
-To compile the C++ code, navigate to `src/qadgsis` and run:
+## C++
+The walks component of Algorithm 2 of SANKOFA is implemented in C++ using pybind11. To compile the code, navigate to `kg_summarization/src/core` and run:
 
 `python setup.py clean`
 
@@ -19,9 +17,16 @@ To compile the C++ code, navigate to `src/qadgsis` and run:
 `python setup.py install`
 
 
-Finally return to the main directory `kg_cplusplus` and run:
+## Running the code
 
-`python3 montecarlo.py`
-for a single run of the alogrithms use main.py
+For a single run of SANKOFA and the baselines, return to the main directory `kg_summarization` and run:
 
-output for simulate.py = multi_runs with a spearte direcoty for each run
+`python3 main.py` 
+
+This reuses the existing query logs.
+
+To generate a new set of queries or compute an average over multiple runs, execute:
+
+`python3 simulate.py`
+
+The output is stored in `multi_runs` with a corresponding folder for each run.
