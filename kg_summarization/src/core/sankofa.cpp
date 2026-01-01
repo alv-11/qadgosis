@@ -1,7 +1,6 @@
 
 #include "sankofa.h"
 #include "mc_algo.h"
-
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 namespace py = pybind11;
@@ -210,7 +209,6 @@ RandomWalkResult generate_random_walks_directed_weighted(
 
 
 
-
 RandomWalkResult update_random_walks_directed_with_weights(
     const Graph_& graph,
     std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
@@ -315,7 +313,7 @@ unordered_map<int, vector<vector<string>>> process_walk_results(const unordered_
     return result;
 }
 
-// A dummy implementation of a personalized PageRank–like random walk.
+// An implementation of a personalized PageRank–like random walk.
 // Starting from node w, it performs L steps; with probability epsilon it teleports to w,
 // and otherwise it randomly follows an outgoing edge.
 vector<int> compute_personalized_pagerank(int w, int L, double epsilon, 
@@ -372,105 +370,8 @@ unordered_map<int, double> calculate_top_k_cumulative(const vector<int> &walk,
 
 
 
-std::pair<std::unordered_map<int, double>, std::unordered_map<int, double>> calculate_top_k_cumulative_with_weights_(
-    const std::vector<int>& walk,
-    std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
-    int k,
-    int timestep,
-    std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
-    double decay_rate = 0.38,
-    int window_size = 5,
-    int n = 0             // total number of nodes,
-) {
-    // 1. Count current timestep
-    for (int node : walk) {
-        counters[timestep][node]++;
-    }
 
-    // 2. Get relevant timesteps
-    std::vector<int> keys;
-    for (const auto& entry : counters) keys.push_back(entry.first);
-    std::sort(keys.begin(), keys.end());
-    int latest_timestep = keys.back();
-    int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
-    std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
-
-    // 3. Apply decay
-    std::unordered_map<int, double> decayed_counts;
-    std::unordered_map<int, double> individual_weights;
-    for (int j : relevant_timesteps) {
-        double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
-        //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
-        individual_weights[j] = weight;
-
-        for (const auto& [node, count] : counters[j]) {
-            decayed_counts[node] += count * weight;
-        }
-    }
-
-    // 4. Update cumulative
-    for (const auto& [node, decayed_count] : decayed_counts) {
-        cumulative_counts[node] += decayed_count;
-    }
-
-    // 5. Normalize
-    double total = 0.0;
-    for (const auto& [_, value] : cumulative_counts) total += value;
-
-
-    std::vector<std::pair<int, double>> normalized;
-    for (const auto& [node, value] : cumulative_counts)  {
-        double norm = (total > 0.0) ? (value / total) : 0.0;
-        normalized.emplace_back(node, norm);
-    }
-
-
-    std::sort(normalized.begin(), normalized.end(), [](const auto& a, const auto& b) {
-        return a.second > b.second;
-    });
-
-
-    // 6. Build top-k
-    std::unordered_map<int, double> top_k;
-    std::unordered_set<int> selected;
-
-    for (int i = 0; i < static_cast<int>(normalized.size()) && top_k.size() < static_cast<size_t>(k); ++i) {
-        int node = normalized[i].first;
-    
-        // Skip if the node starts with 1234567
-        if (std::to_string(node).rfind("12345", 0) == 0) {
-            continue;
-        }
-    
-        top_k[node] = normalized[i].second;
-        selected.insert(node);
-    }
-
-
-    // 8. Final padding from cumulative_counts keys if still needed
-    for (const auto& [node, _] : cumulative_counts) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = 0.0;
-        }
-    }
-
-    // 7. Pad with walk nodes if needed
-    for (int node : walk) {
-        if (top_k.size() >= static_cast<size_t>(k)) break;
-        if (selected.insert(node).second) {
-            top_k[node] = 0.0;
-        }
-    }
-
-    return {top_k, individual_weights};
-}
-
-
-
-
-
-TopKResult calculate_top_k_cumulative_with_weights_new(
+TopKResult calculate_top_k_cumulative_with_weights(
     const std::vector<int>& walk,
     std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
     int k,
@@ -571,9 +472,6 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
         weighted_scores.emplace_back(node, weight);
         
 
-        
-
-
 
     }
     for (const auto& [node, _] : pi_v) {
@@ -626,7 +524,6 @@ TopKResult calculate_top_k_cumulative_with_weights_new(
 }
 
 
-
 // Modify the function to return the new structure
 TopKSummaryWithWeights generate_top_k_summary(
     int num_timesteps,
@@ -660,10 +557,7 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
 
-
-
     for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
-        cout << "Processing timestep " << t << endl;
         auto total_start = chrono::high_resolution_clock::now();
         auto graph_changes_result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
         summary.changes_over_time[t] = graph_changes_result.changes;
@@ -718,29 +612,21 @@ TopKSummaryWithWeights generate_top_k_summary(
         auto processed_R = process_walk_results(R.precomputed_walks);
         processed_R_per_t.push_back(processed_R);
 
-
-
         for (const auto& [start_node, walks] : processed_R) {
             auto& dest = accumulated_walks[start_node];
             dest.insert(dest.end(), walks.begin(), walks.end());
         }
-       
 
         vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, processed_R, directed_graph);
-
 
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
 
         auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);
 
-
-
-
         // Calculate top-k cumulative wi
-        auto top_k_result = calculate_top_k_cumulative_with_weights_new(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c);
-        
-
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c);
+    
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
         summary.global_pr[t] = top_k_result.nontop_k;
         weights[t] = top_k_result.individual_weights; // Store weights for the current timestep
@@ -858,4 +744,3 @@ py::arg("num_timesteps"),
 py::arg("num_walks"), py::arg("dynamic_graph"), py::arg("queries"), 
 py::arg("c"), py::arg("epsilon"), py::arg("k"), py::arg("decay_rate"));
 }
-

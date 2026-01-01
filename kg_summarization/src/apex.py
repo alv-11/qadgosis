@@ -6,10 +6,15 @@ from .metrics import total_query_log_metrics, average_query_log_metrics
 import logging
 import pdb
 import random
+import warnings
 DETAILED_LOGGING = True
 DETAILED_PRINTING = False
 MORE_DETAIL = False
 GAMMA = 0.5
+
+# with warnings.catch_warnings():
+#     warnings.simplefilter("ignore", category=RuntimeWarning)
+#     mean_val = np.mean(arr)
 
 class Summary(KnowledgeGraph):
 
@@ -23,21 +28,7 @@ class Summary(KnowledgeGraph):
     def parent(self):
         return self.parent_
 
-    # def marginal_value(self, triple):
-    #     """
-    #     :param triple: (e1, r, e2) triple
-    #     :return marginal_value: total marginal value of adding triple to S
-    #     """
-    #     total = 0
-    #     e1, r, e2 = triple
 
-    #     if not self.has_entity(e1):
-    #         total += self.parent().entity_value(e1)
-    #     if not self.has_entity(e2):
-    #         total += self.parent().entity_value(e2)
-    #     if not self.has_triple(triple):
-    #         total += self.parent().triple_value(triple)
-    #     return total
 
     def fill(self, triples, k):
         """
@@ -48,22 +39,6 @@ class Summary(KnowledgeGraph):
             if self.number_of_triples() >= k:
                 return
             self.add_triple(triple)
-
-    # def add_entity(self, topic_mid):
-    #     for entity in self.entities().copy():
-    #         if self.parent().csr_matrix()[self.parent().entity_id_[entity], self.parent().entity_id_[topic_mid]] != 0: # exists a triple
-    #             # find the relationship
-    #             for r in self.parent().triples_[entity]:
-    #                 if topic_mid in self.parent().triples_[entity][r]:
-    #                     self.add_triple((entity, r, topic_mid))
-
-    #         if self.parent().csr_matrix_T()[self.parent().entity_id_[entity], self.parent().entity_id_[topic_mid]] != 0: # exists a triple
-    #             for r in self.parent().triples_[topic_mid]:
-    #                 if entity in self.parent().triples_[topic_mid][r]:
-    #                     self.add_triple((topic_mid, r, entity))
-
-    #     # in case self.entities() is empty
-    #     self.entities_.add(topic_mid)
 
     # for better efficiency
 
@@ -174,31 +149,7 @@ def binary_find(index_list, changed_index, H):
     return -1
     
 
-# def binary_insert(index_list, changed_index, H):
-#     changed_value = H[changed_index]
-#     low = 0
-#     high = len(index_list) - 1
-#     mid = 0
-#     pos = 0
-#     while high >= low:
-#         if high <= low + 1:
-#             if H[index_list[low]] <= changed_value:
-#                 pos = low
-#                 break
-#             elif H[index_list[high]] >= changed_value:
-#                 pos = high + 1
-#                 break
-#             pos = high
-#             break
-#         mid = (high + low)//2
-#         if H[index_list[mid]] < changed_value:
-#             high = mid
-#         elif H[index_list[mid]] > changed_value:
-#             low = mid + 1
-#         else:
-#             pos = mid
-#             break
-#     index_list.insert(pos, changed_index)
+
 
 def binary_insert(index_list, changed_index, H):
 
@@ -440,7 +391,6 @@ def APEX_naive(KG, K, query_log, query_num_per_test=1, gamma=GAMMA, diameter = 1
 
 
 def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter=1, alpha=0.3, t=0, H=None, q=None, e=None, r=None, csr_indirect_matrices=None, index_list=None):
-    print('APEX')
     smoothing = 0.5
     update_time_list = []
     acc_list = []
@@ -518,13 +468,12 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
         # Construct initial summary
         P = construct_complete(KG, K, index_list)
         run_time = time() - t0
-        #print(run_time, "time taken for initial construction")
+
         # Test for initial graph
         if DETAILED_LOGGING:
             logging.info('Initial Test')
         total_F1, total_precision, total_recall = total_query_log_metrics(P, query_log)
-        #print(total_F1)
-        #apex.append({"Timestep": t, "Total F1": total_F1})
+
 
 
         if DETAILED_LOGGING:
@@ -541,7 +490,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
 
     # Update phase
     else:
-        print("Adapting for timestamp: ", t)
+        #print("Adapting for timestamp: ", t)
         t1 = time()
 
         if H is None:
@@ -633,7 +582,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
                 if triple_in_id not in H:
                     H[triple_in_id] = 0
 
-        print('incremental')
+        #incremental
         incremental_sort(index_list, changed_triples_in_id, H, H_new)
 
         new_index_list = []
@@ -646,10 +595,9 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
 
         H = H_new
 
-        print('construct')
+        #construct
         P = construct_complete(KG, K, index_list)
         run_time = time() - t1
-        #print(run_time, "time taken")
         update_time_list.append(run_time)
         if DETAILED_PRINTING:
             print("Length Index List: ", len(index_list))
@@ -661,8 +609,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
 
         # Evaluate question answering on the testing queries
         total_F1, total_precision, total_recall = total_query_log_metrics(P, query_log)
-        #print(total_F1)
-        #apex.append({"Timestep": t, "Total F1": total_F1})  
+
 
         if DETAILED_LOGGING:
             logging.info('\t  Total F1/precision/recall')
@@ -677,8 +624,8 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
 
         acc_list.append(avg_F1)
 
-    logging.info('\t  Ave Time on Each Training Log: {:.2f} seconds'.format(np.mean(update_time_list)))
-    logging.info('\t  Ave Ave F1 on Each Training Log: {:.2f}'.format(np.mean(acc_list)))
+    #logging.info('\t  Ave Time on Each Training Log: {:.2f} seconds'.format(np.mean(update_time_list)))
+    #logging.info('\t  Ave Ave F1 on Each Training Log: {:.2f}'.format(np.mean(acc_list)))
 
     #return acc_list, update_time_list, P
     return P, H, q, e, r, csr_indirect_matrices, index_list, total_F1, run_time

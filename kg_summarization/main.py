@@ -50,7 +50,7 @@ def main():
     # Generate top-k summaries
     results = walks.generate_top_k_summary(
         num_timesteps=len(converted_dynagraph),
-        num_walks=2,
+        num_walks=5,
         dynamic_graph=converted_dynagraph,
         queries=converted_queries,
         c=2,
@@ -77,16 +77,17 @@ def main():
         test_data=test_data, walks_runtime=runtime_df, max_triples=summary_size
     )
     sankofa.to_csv("sankofa_results.csv", index=False)
-    print(triples_no)
+   
 
 
-    sota = process_summary_baselines(
-        graphs, triples_no, training_data, test_data,
-        methods=["glimpse"]#, "glimpse", "apex", "isummary"]
-        , weights=weights
-    )
-    merged_df = pd.merge(sankofa, sota, on="Timestep")
-    merged_df.to_csv("all_results.csv", index=False)
+    # sota = process_summary_baselines(
+    #     graphs, triples_no, training_data, test_data,
+    #     methods=["glimpse", "apex", "isummary"]
+    #     , weights=weights
+    # )
+    # merged_df = pd.merge(sankofa, sota, on="Timestep")
+    # merged_df.to_csv("all_results.csv", index=False)
+    #print("Summarization and evaluation completed. Results saved to 'all_results.csv'.")
 
 if __name__ == "__main__":
     main()

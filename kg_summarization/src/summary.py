@@ -19,24 +19,30 @@ import pickle
 
 
 
+
 def weighted_topk(items, weights, k):
     """
-    top-k using partial sort (largest weights).
+    ES (Efraimidis–Spirakis) weighted top-k sampling without replacement.
     """
 
-    keys = np.empty(len(weights), dtype=float)
+    n = len(weights)
+    if k <= 0 or n == 0:
+        return []
+
+    k = min(k, n)
+
+    keys = np.empty(n, dtype=float)
 
     for i, w in enumerate(weights):
         if w <= 0:
-            keys[i] = np.inf       
+            keys[i] = np.inf
         else:
             u = random.random()
             keys[i] = -math.log(u) / w
 
-    # get indices of k smallest keys
     idx = np.argpartition(keys, k)[:k]
-
     return [items[i] for i in idx]
+
 
 
 class SummaryGraph(KnowledgeGraph):
@@ -132,7 +138,6 @@ class SummaryGraph(KnowledgeGraph):
                     if e2 in top_k_nodes:
                         internal.add((e2, r, e1))
 
-        print(len(internal), budget, len(set(internal)))
 
    
         internal = list(internal)
@@ -243,21 +248,18 @@ class SummaryGraph(KnowledgeGraph):
 
         # 2. Add boundary triples in batches
         while not self._limit_reached():
-
             added = self.add_related_random_triples_batch(self.batch_size)
             if not added:
                 break
 
 
         #print("Adding fallback triples...")
-        fallback_start= time.time()
 
         while not self._limit_reached():
-        #print("Adding boundary triples...")
             fallback = self._fallback_add()
             if not fallback:
                 break
-        fallback_end = time.time()
+
 
     # ---------------------------
     # Batched addition
@@ -289,6 +291,7 @@ class SummaryGraph(KnowledgeGraph):
         return added
 
 
+
     def _fallback_add(self):
         remaining = self.max_triples - self.triple_count
         if remaining <= 0:
@@ -298,15 +301,13 @@ class SummaryGraph(KnowledgeGraph):
         if not cand:
             return
 
-        arr = np.asarray(w, dtype=float)
-        k = min(remaining, len(arr))
+        selected = weighted_topk(cand, w, remaining)
 
-        idx = np.argpartition(-arr, k)[:k]
-
-        for i in idx:
+        for triple in selected:
             if self._limit_reached():
                 break
-            self._try_add_triple(cand[i])
+            self._try_add_triple(triple)
+
 
 
 
@@ -723,7 +724,7 @@ def extract_snapshot_number(filename):
     return int(num_part)
 
 def load_snapshots(subgraph_dir):
-    """Load all snapshots from the specified directory."""
+    # """Load all snapshots from the specified directory."""
     graphs = {}
     
     for i, file_name in enumerate(sorted(os.listdir(subgraph_dir))):
@@ -750,7 +751,7 @@ def analyze_graph_properties(graph, timestep):
 
 def generate_query_logs(graph, timestep, num_queries=200):
     """Generate query logs for a given graph."""
-    topic_mids = random.sample(list(graph.triples_.keys()), k=15)
+    topic_mids = random.sample(list(graph.triples_.keys()), k=5)
     valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
     if not valid_topic_mids:
         print(f"No valid topic_mids found in KG for snapshot {timestep}")
@@ -791,7 +792,7 @@ def process_snapshots(subgraph_dir):
     key=extract_snapshot_number
         )
 
-    print("Loading all subgraph snapshots...")
+    #print("Loading all subgraph snapshots...")
 
     for i, file_name in enumerate(snapshot_files):
         path = os.path.join(subgraph_dir, file_name)
