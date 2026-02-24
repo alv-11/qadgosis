@@ -794,7 +794,7 @@ def process_snapshots(subgraph_dir):
         KG = DBPedia(rdf_gz=path)
         KG.load()
         graphs[i] = KG
-
+        #print(f"Loaded snapshot {file_name} as timestep {i}, size: {KG.number_of_triples()} triples ,node_size: {KG.number_of_entities()}")
         query_log_file = f"query_log_snapshot_{i}.pkl"
         query_log = save_or_load_query_log(query_log_file, KG, i)
         if not query_log:

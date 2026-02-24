@@ -170,8 +170,11 @@ def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False):
     query_dir = KG.query_dir()
     if not os.path.exists(query_dir):
         # Create the directory if it doesn't exist
+        #os.makedirs(query_dir, exist_ok=True)
+        query_dir = os.path.join(os.getcwd(), "files")
         os.makedirs(query_dir, exist_ok=True)
-        print(f"Query directory '{query_dir}' did not exist. It has been created.")
+        
+        #print(f"Query directory '{query_dir}' did not exist. It has been created.")
 
     n_random = np.int64(random_query_prob * len(query_log))
     indices = np.random.randint(len(query_log), size=n_random)

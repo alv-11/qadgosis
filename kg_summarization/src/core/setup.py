@@ -30,7 +30,7 @@ setup(
     cmdclass={'build_ext': BuildExtWithGPP},
 )
 
-"""for MACOS users uncomment this and comment the above code"""
+# """for MACOS users uncomment this and comment the above code"""
 # from setuptools import setup, Extension
 # import pybind11
 

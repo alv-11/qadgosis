@@ -525,6 +525,8 @@ TopKResult calculate_top_k_cumulative_with_weights(
 }
 
 
+
+
 // Modify the function to return the new structure
 TopKSummaryWithWeights generate_top_k_summary(
     int num_timesteps,
@@ -549,12 +551,11 @@ TopKSummaryWithWeights generate_top_k_summary(
     std::unordered_set<int> accumulated_personalization_set;
     std::unordered_map<int, std::vector<std::vector<std::string>>> accumulated_walks;
     std::unordered_set<int> accumulated_nodes;
-    std::vector<std::unordered_map<int, std::vector<std::vector<std::string>>>> processed_R_per_t;
+    //std::vector<std::unordered_map<int, std::vector<std::vector<std::string>>>> processed_R_per_t;
     std::unordered_map<int,double> node_walk_weight;
     std::unordered_map<int, std::unordered_map<int,double>> pi_MC_per_t;
     std::unordered_map<int, double> prev_pagerank;             // stores PR from last timestep
     std::unordered_map<int, std::unordered_map<int, double>> pagerank_per_t;  // stores PR per timestep
-
 
 
 
@@ -585,13 +586,13 @@ TopKSummaryWithWeights generate_top_k_summary(
         if (t == 0) {
     
             R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
-            summary.random_walks[t] = R;
+            summary.random_walks[0] = R;
 
 
         } else {
 
-            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[t - 1].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
-            summary.random_walks[t] = R;
+            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[0].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
+            summary.random_walks[0] = R;
         }
         auto end = chrono::high_resolution_clock::now();
 
@@ -611,7 +612,7 @@ TopKSummaryWithWeights generate_top_k_summary(
   
         // Process the random walk results
         auto processed_R = process_walk_results(R.precomputed_walks);
-        processed_R_per_t.push_back(processed_R);
+        //processed_R_per_t.push_back(processed_R);
 
         for (const auto& [start_node, walks] : processed_R) {
             auto& dest = accumulated_walks[start_node];
@@ -642,6 +643,224 @@ TopKSummaryWithWeights generate_top_k_summary(
         // Store runtime in dictionary
         runtime_per_timestep[t] = total_elapsed.count();
     }
+
+    // Return both summary, weights, and runtime dictionary
+    return {summary, weights, runtime_per_timestep}; // Updated return statement
+}
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+GraphChangesDummyResult graph_changes_with_dummy_node_single(
+    const Graph_& current_graph,
+    const Graph_& next_graph,
+    const std::unordered_map<int, std::unordered_map<int,int>>& queries,
+    int timestep,
+    bool has_next
+) {
+
+    // Personalize current snapshot
+    auto res1 = personalized_graph(current_graph, queries.at(timestep), timestep);
+    Graph_ snapshot_s = res1.snapshot;
+    int dummy_node = res1.dummy_node;
+    auto personalization = res1.personalization;
+
+    Graph_ snapshot_t;
+
+    if (has_next) {
+        snapshot_t = personalized_graph(next_graph, queries.at(timestep + 1), timestep + 1).snapshot;
+    } else {
+        snapshot_t = snapshot_s;  // last timestep case
+    }
+
+    // --- Collect nodes ---
+    std::unordered_set<int> nodes_s, nodes_t;
+
+    for (const auto& p : snapshot_s) {
+        nodes_s.insert(p.first);
+        for (const auto& q : p.second)
+            nodes_s.insert(q.first);
+    }
+
+    for (const auto& p : snapshot_t) {
+        nodes_t.insert(p.first);
+        for (const auto& q : p.second)
+            nodes_t.insert(q.first);
+    }
+
+    // --- Compute node changes ---
+    std::unordered_set<int> nodes_added, nodes_removed;
+
+    for (int node : nodes_t)
+        if (!nodes_s.count(node))
+            nodes_added.insert(node);
+
+    for (int node : nodes_s)
+        if (!nodes_t.count(node))
+            nodes_removed.insert(node);
+
+    // --- Compute edge changes ---
+    std::set<std::pair<int,int>> edges_s, edges_t;
+
+    for (const auto& p : snapshot_s)
+        for (const auto& q : p.second)
+            edges_s.insert({p.first, q.first});
+
+    for (const auto& p : snapshot_t)
+        for (const auto& q : p.second)
+            edges_t.insert({p.first, q.first});
+
+    std::set<std::pair<int,int>> edges_added, edges_removed;
+
+    for (const auto& e : edges_t)
+        if (!edges_s.count(e))
+            edges_added.insert(e);
+
+    for (const auto& e : edges_s)
+        if (!edges_t.count(e))
+            edges_removed.insert(e);
+
+    GraphChanges changes {nodes_added, nodes_removed, edges_added, edges_removed};
+
+    return {snapshot_s, changes, dummy_node, personalization};
+}
+
+
+static TopKSummary summary;
+static std::unordered_map<int, std::unordered_map<int,double>> weights;
+static std::unordered_map<int,double> runtime_per_timestep;
+static std::unordered_map<int,double> cumCounts;
+static std::unordered_map<int, std::unordered_map<int,int>> counters;
+//static bool first = true;
+
+
+TopKSummaryWithWeights process_one_timestep(
+    int num_walks,
+    Graph_& current_graph,
+    Graph_& next_graph,
+    std::unordered_map<int, std::unordered_map<int,int>>& queries,
+    double c,
+    double epsilon,
+    int k,
+    double decay_rate,
+    int t,
+    bool has_next,
+    int total_timesteps
+) {
+    // TopKSummary summary;
+    // std::unordered_map<int, std::unordered_map<int, double>> weights; // Declare weights
+    // std::unordered_map<int, double> runtime_per_timestep; // Dictionary to store runtimes
+    // std::unordered_map<int, double> cumCounts;
+    // std::unordered_map<int, std::unordered_map<int, int>> counters;  // counters for each timestep
+
+
+    // Result per timestep
+    std::vector<std::unordered_map<int, double>> pagerank_per_timestep;
+    Graph_ accumulated_graph; // initially empty
+    std::unordered_set<int> accumulated_personalization_set;
+    std::unordered_map<int, std::vector<std::vector<std::string>>> accumulated_walks;
+    std::unordered_set<int> accumulated_nodes;
+    //std::vector<std::unordered_map<int, std::vector<std::vector<std::string>>>> processed_R_per_t;
+    std::unordered_map<int,double> node_walk_weight;
+    std::unordered_map<int, std::unordered_map<int,double>> pi_MC_per_t;
+    std::unordered_map<int, double> prev_pagerank;             // stores PR from last timestep
+    std::unordered_map<int, std::unordered_map<int, double>> pagerank_per_t;  // stores PR per timestep
+
+
+
+    //for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
+        auto total_start = chrono::high_resolution_clock::now();
+        //auto graph_changes_result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
+        auto graph_changes_result = graph_changes_with_dummy_node_single(
+            current_graph,
+            next_graph,
+            queries,
+            t,
+            has_next
+        );
+        summary.changes_over_time[t] = graph_changes_result.changes;
+        std::unordered_set<int> personalization_set;
+
+        // Count all nodes in the snapshot
+        unordered_set<int> nodes_set;
+        for (const auto& p : graph_changes_result.snapshot) {
+            nodes_set.insert(p.first);
+            for (const auto& q : p.second)
+                nodes_set.insert(q.first);
+        }
+        int n = nodes_set.size();
+        int L = calculate_required_walk_length(c, epsilon, k, n);
+
+
+        int walk_length = 5;
+
+        // Preprocess (we already have weighted edges)
+        Graph_ weighted_graph = graph_changes_result.snapshot;
+
+        auto start = chrono::high_resolution_clock::now();
+        RandomWalkResult R;
+        if (t == 0) {
+    
+            R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
+            summary.random_walks[0] = R;
+
+
+        } else {
+
+            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[0].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
+            summary.random_walks[0] = R;
+        }
+        auto end = chrono::high_resolution_clock::now();
+
+
+        chrono::duration<double> elapsed_update = end - start;
+
+
+        // Create a directed graph for the walk process
+        DirectedGraph directed_graph;
+        for (const auto& p : weighted_graph) {
+            int u = p.first;
+            for (const auto& q : p.second)
+                directed_graph[u].push_back(q.first);
+        }
+
+
+  
+        // Process the random walk results
+        auto processed_R = process_walk_results(R.precomputed_walks);
+        //processed_R_per_t.push_back(processed_R);
+
+        for (const auto& [start_node, walks] : processed_R) {
+            auto& dest = accumulated_walks[start_node];
+            dest.insert(dest.end(), walks.begin(), walks.end());
+        }
+
+        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, processed_R, directed_graph);
+
+        summary.ppr_walks[t] = walk;
+        auto time_start = chrono::high_resolution_clock::now();
+
+        auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);
+
+        // Calculate top-k cumulative wi
+        //auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c, epsilon);
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, total_timesteps, n,c, epsilon);
+    
+        summary.top_k_cumsum_walks[t] = top_k_result.top_k;
+        summary.global_pr[t] = top_k_result.nontop_k;
+        weights[t] = top_k_result.individual_weights; // Store weights for the current timestep
+
+        auto time_end = chrono::high_resolution_clock::now();
+        chrono::duration<double> elapsed_topk = time_end - time_start;
+
+
+        auto total_end = chrono::high_resolution_clock::now();
+        chrono::duration<double> total_elapsed = total_end - total_start;
+
+        // Store runtime in dictionary
+        runtime_per_timestep[t] = total_elapsed.count();
+    //}
 
     // Return both summary, weights, and runtime dictionary
     return {summary, weights, runtime_per_timestep}; // Updated return statement
@@ -737,11 +956,130 @@ result_dict["all_weights"] = all_weights;
 return result_dict;
 }
 
+
+/////////////////////////////////////////////////////
+py::dict wrap_process_one_timestep(
+    int num_walks,
+    Graph_& current_graph,
+    Graph_& next_graph,
+    std::unordered_map<int, std::unordered_map<int,int>>& queries,
+    double c,
+    double epsilon,
+    int k,
+    double decay_rate,
+    int t,
+    bool has_next,
+    int total_timesteps
+) {
+
+    TopKSummaryWithWeights result =
+        process_one_timestep(
+            num_walks,
+            current_graph,
+            next_graph,
+            queries,
+            c,
+            epsilon,
+            k,
+            decay_rate,
+            t,
+            has_next,
+            total_timesteps
+        );
+
+    TopKSummary summary = result.summary;
+
+    py::dict result_dict;
+
+    // runtime
+    py::dict runtime_dict;
+    for (const auto& entry : result.runtime_per_timestep)
+        runtime_dict[py::int_(entry.first)] = entry.second;
+    result_dict["runtime_per_timestep"] = runtime_dict;
+
+    // changes
+    py::dict changes_over_time;
+    for (const auto &entry : summary.changes_over_time) {
+        py::dict ch;
+
+        std::vector<int> nodes_added(entry.second.nodes_added.begin(), entry.second.nodes_added.end());
+        std::vector<int> nodes_removed(entry.second.nodes_removed.begin(), entry.second.nodes_removed.end());
+        std::vector<std::pair<int,int>> edges_added(entry.second.edges_added.begin(), entry.second.edges_added.end());
+        std::vector<std::pair<int,int>> edges_removed(entry.second.edges_removed.begin(), entry.second.edges_removed.end());
+
+        ch["nodes_added"] = nodes_added;
+        ch["nodes_removed"] = nodes_removed;
+        ch["edges_added"] = edges_added;
+        ch["edges_removed"] = edges_removed;
+
+        changes_over_time[py::int_(entry.first)] = ch;
+    }
+
+    result_dict["changes_over_time"] = changes_over_time;
+
+    // top_k
+    py::dict top_k;
+    for (const auto &entry : summary.top_k_cumsum_walks) {
+        py::dict inner;
+        for (const auto &p : entry.second)
+            inner[py::int_(p.first)] = p.second;
+        top_k[py::int_(entry.first)] = inner;
+    }
+
+    result_dict["top_k_cumsum_walks"] = top_k;
+
+    // global_pr
+    py::dict global_pr;
+    for (const auto &entry : summary.global_pr) {
+        py::dict inner;
+        for (const auto &p : entry.second)
+            inner[py::int_(p.first)] = p.second;
+        global_pr[py::int_(entry.first)] = inner;
+    }
+
+    result_dict["global_pr"] = global_pr;
+
+    // weights
+    py::dict all_weights;
+    for (const auto& entry : result.weights) {
+        py::dict inner;
+        for (const auto& p : entry.second)
+            inner[py::int_(p.first)] = p.second;
+        all_weights[py::int_(entry.first)] = inner;
+    }
+
+    result_dict["all_weights"] = all_weights;
+
+    return result_dict;
+}
+
+
+
+
+// PYBIND11_MODULE(sankofa, m) {
+// m.doc() = "Python bindings for generate_top_k_summary function using the C++ walks library";
+// m.def("generate_top_k_summary", &wrap_generate_top_k_summary,
+// "Generate a top-k summary from dynamic graph updates.",
+// py::arg("num_timesteps"), 
+// py::arg("num_walks"), py::arg("dynamic_graph"), py::arg("queries"), 
+// py::arg("c"), py::arg("epsilon"), py::arg("k"), py::arg("decay_rate"));
+// }
+
 PYBIND11_MODULE(sankofa, m) {
-m.doc() = "Python bindings for generate_top_k_summary function using the C++ walks library";
-m.def("generate_top_k_summary", &wrap_generate_top_k_summary,
-"Generate a top-k summary from dynamic graph updates.",
-py::arg("num_timesteps"), 
-py::arg("num_walks"), py::arg("dynamic_graph"), py::arg("queries"), 
-py::arg("c"), py::arg("epsilon"), py::arg("k"), py::arg("decay_rate"));
+    m.doc() = "Python bindings for Sankofa";
+
+    m.def("process_one_timestep",
+          &wrap_process_one_timestep,
+          py::arg("num_walks"),
+          py::arg("current_graph"),
+          py::arg("next_graph"),
+          py::arg("queries"),
+          py::arg("c"),
+          py::arg("epsilon"),
+          py::arg("k"),
+          py::arg("decay_rate"),
+          py::arg("t"),
+          py::arg("has_next"),
+          py::arg("total_timesteps")
+    );
 }
