@@ -808,3 +808,183 @@ def process_snapshots(subgraph_dir):
     action = "Loaded existing" if os.path.exists(query_log_file) else "Generated new"
     print(f"{action} query_logs")
     return graphs, training_data, test_data, queries_
+
+
+def load_single_snapshot(subgraph_dir, file_name):
+    """
+    Load exactly one snapshot and return the KG.
+    """
+    path = os.path.join(subgraph_dir, file_name)
+    KG = DBPedia(rdf_gz=path)
+    KG.load()
+    return KG
+
+
+def prepare_queries_and_splits(subgraph_dir):
+    """
+    Generate training/test splits and query lists
+    WITHOUT storing all graphs in memory.
+    """
+    training_data, test_data, queries_ = {}, {}, {}
+
+    files = os.listdir(subgraph_dir)
+    snapshot_files = sorted(
+        [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
+        key=extract_snapshot_number
+    )
+
+    for i, file_name in enumerate(snapshot_files):
+        path = os.path.join(subgraph_dir, file_name)
+
+        KG = DBPedia(rdf_gz=path)
+        KG.load()
+
+        query_log_file = f"query_log_snapshot_{i}.pkl"
+        query_log = save_or_load_query_log(query_log_file, KG, i)
+
+        if not query_log:
+            continue
+
+        split_idx = int(0.8 * len(query_log))
+        training_data[i] = query_log[:split_idx]
+        test_data[i] = query_log[split_idx:]
+        queries_[i] = [q['Parse']['TopicEntityMid'] for q in training_data[i]]
+
+        # Free memory immediately
+        del KG
+
+    print("Prepared query logs (streaming mode).")
+
+    return training_data, test_data, queries_, snapshot_files
+
+
+
+
+def process_summary_sankofa_streaming(
+    top_k_nodes_dict,
+    snapshot_files,
+    subgraph_dir,
+    label,
+    weights,
+    global_pr_dict,
+    test_data,
+    walks_runtime=None,
+    max_triples=None
+):
+
+    triples_no = {}
+    future_rows = []
+    weighted_tests = []
+    summary_runtime_rows = []
+
+    # Only intersect lightweight dicts
+    common_keys = (
+        top_k_nodes_dict.keys()
+        & weights.keys()
+        & test_data.keys()
+    )
+
+    for key in sorted(common_keys):
+
+        print(f"Evaluating timestep {key}")
+
+        # 🔥 STREAM LOAD GRAPH HERE
+        file_name = snapshot_files[key]
+        KG = load_single_snapshot(subgraph_dir, file_name)
+
+        top_k_nodes = {str(n): v for n, v in top_k_nodes_dict[key].items()}
+        non_top_k_nodes = {str(n): v for n, v in global_pr_dict[key].items()}
+        non_top_k_nodes = {k: v for k, v in non_top_k_nodes.items() if k not in top_k_nodes}
+
+        # -------- SUMMARY + RUNTIME --------
+        t0 = time.time()
+        S = SummaryGraph(KG, top_k_nodes, non_top_k_nodes, max_triples)
+        t1 = time.time()
+
+        summary_runtime = t1 - t0
+        summary_runtime_rows.append({
+            "Timestep": key,
+            "Runtime (summary)": summary_runtime
+        })
+
+        triples_no[key] = S.triple_count
+
+        # -------- PRESENT TEST F1 --------
+        log = test_data[key]
+        total_F1, total_precision, total_recall = total_query_log_metrics(S, log)
+
+        future_rows.append({
+            "Timestep": key,
+            "Future Test F1": total_F1
+        })
+
+        # -------- HISTORICAL TESTS --------
+        test_weights = weights[key]
+        total_w = sum(test_weights.values())
+        test_weights_norm = {
+            j: test_weights[j] / total_w for j in test_weights
+        }
+
+        df_weight = process_all_timesteps(
+            training_set=test_data,
+            summary=S,
+            i=key,
+            test_weights=test_weights_norm
+        )
+
+        weighted_tests.append(df_weight)
+
+        # 🔥 IMPORTANT: FREE MEMORY
+        del KG
+        del S
+
+    # -------- BUILD DATAFRAMES --------
+    df_future = pd.DataFrame(future_rows)
+    df_summary_rt = pd.DataFrame(summary_runtime_rows)
+
+    if len(weighted_tests) > 0:
+        df_weighted = pd.concat(weighted_tests, ignore_index=True)
+        df_weighted = df_weighted.rename(columns={
+            "Timestep Window": "Timestep",
+            "Total F1": "Weighted Future Test F1"
+        })
+    else:
+        df_weighted = pd.DataFrame(columns=[
+            "Timestep", "Weighted Future Test F1"
+        ])
+
+    for df in (df_future, df_summary_rt, df_weighted):
+        if not df.empty:
+            df["Timestep"] = df["Timestep"].astype(int)
+
+    if walks_runtime is None:
+        walks_runtime = pd.DataFrame({
+            "Timestep": sorted(common_keys),
+            "Runtime (walks)": [0.0] * len(common_keys)
+        })
+
+    if "Runtime (walks)" not in walks_runtime.columns:
+        walks_runtime["Runtime (walks)"] = 0.0
+
+    # -------- MERGE --------
+    merged = walks_runtime.merge(df_summary_rt, on="Timestep", how="right")
+    merged = merged.merge(df_future, on="Timestep", how="left")
+    merged = merged.merge(df_weighted, on="Timestep", how="left")
+
+    merged["Weighted Future Test F1"] = merged["Weighted Future Test F1"].fillna(0.0)
+
+    merged["Runtime (seconds)"] = (
+        merged["Runtime (summary)"].fillna(0.0) +
+        merged["Runtime (walks)"].fillna(0.0)
+    )
+
+    sankofa = merged[[
+        "Timestep",
+        "Runtime (seconds)",
+        "Future Test F1",
+        "Weighted Future Test F1"
+    ]].copy()
+
+    print(sankofa)
+
+    return triples_no, sankofa

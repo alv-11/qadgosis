@@ -1,6 +1,6 @@
 
 import pandas as pd
-from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa, process_summary_baselines
+from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, load_single_snapshot, process_summary_sankofa_streaming
 import src.core.sankofa  as walks
 import sys
 from pathlib import Path
@@ -9,7 +9,7 @@ run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
 
 
-def main():
+def main_():
     dynagraph = {} 
     subgraph_dir ="data/imdb"
  
@@ -30,7 +30,7 @@ def main():
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
             print(f"Summary triple size: {summary_size}")
-            print(density := len(graph.edges) / (len(graph.nodes) * (len(graph.nodes) - 1)))
+            #print(density := len(graph.edges) / (len(graph.nodes) * (len(graph.nodes) - 1)))
 
         # Convert the graph to the required format
         converted_graph = {
@@ -92,26 +92,7 @@ def main():
     runtime_per_timestep = results["runtime_per_timestep"]
     # for timestep, runtime in runtime_per_timestep.items():
     #     print(f"Timestep {timestep}: Runtime for walks = {runtime:.4f} seconds")
-    non_topk_global_pr =  results["global_pr"]#
-    # changes = results["changes_over_time"] 
-
-    # # Count the number of changes for each timestep
-    # for timestep, change in changes.items():
-    #     nodes_added_count = len(change.get("nodes_added", []))
-    #     nodes_removed_count = len(change.get("nodes_removed", []))
-    #     edges_added_count = len(change.get("edges_added", []))
-    #     edges_removed_count = len(change.get("edges_removed", []))
-
-    #     print(f"Timestep {timestep}:")
-    #     print(f"  Nodes Added: {nodes_added_count}")
-    #     print(f"  Nodes Removed: {nodes_removed_count}")
-    #     print(f"  Edges Added: {edges_added_count}")
-    #     print(f"  Edges Removed: {edges_removed_count}")
-    #     print("-" * 40)
- 
-    # for i, change in enumerate(changes):
-       
-    #     print(f"Timestep {i}: {change:.4f} change in graph structure compared to previous timestep.")
+    non_topk_global_pr =  results["global_pr"]
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime} for t, runtime in runtime_per_timestep.items()]
@@ -133,6 +114,136 @@ def main():
     # )
     # merged_df = pd.merge(sankofa, sota, on="Timestep")
     # merged_df.to_csv("all_results.csv", index=False)
+
+
+def main():
+    subgraph_dir = "data/wiki"
+
+    print("Preparing queries...")
+    training_data, test_data, queries_, snapshot_files = \
+        prepare_queries_and_splits(subgraph_dir)
+
+    total_timesteps = len(snapshot_files)
+
+    converted_queries = {
+        int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
+        for timestep, query_list in queries_.items()
+    }
+
+    previous_graph = None
+    results = None
+    summary_size = None
+    K = None
+
+    print("Streaming snapshots into C++...")
+
+    for t, file_name in enumerate(snapshot_files):
+
+        print(f"Loading {file_name}")
+
+        KG = load_single_snapshot(subgraph_dir, file_name)
+        G = analyze_graph_properties(KG, t)
+
+        # Compute summary parameters once
+        if t == 0:
+            b = 0.1
+            summary_size = int(len(G.edges) * b)
+            k1 = (len(G.nodes))**2 / len(G.edges)
+            K = int(k1 / (0.1/b))
+
+            print(f"Summary triple size: {summary_size}")
+            # print("density:",
+            #       len(G.edges) / (len(G.nodes) * (len(G.nodes) - 1)))
+
+        # Convert graph to C++ format
+        current_graph = {
+            int(node): {
+                int(neighbor): float(G[node][neighbor].get("weight", 0.0001))
+                for neighbor in G.neighbors(node)
+            }
+            for node in G.nodes
+        }
+
+        # Free heavy KG immediately
+        del KG
+        del G
+
+        if previous_graph is None:
+            previous_graph = current_graph
+            continue
+
+        results = walks.process_one_timestep(
+            num_walks=5,
+            current_graph=previous_graph,
+            next_graph=current_graph,
+            queries=converted_queries,
+            c=2,
+            epsilon=0.25,
+            k=K,
+            decay_rate=0.03,
+            t=t-1,
+            has_next=True,
+            total_timesteps=total_timesteps
+        )
+
+        del previous_graph
+        previous_graph = current_graph
+
+    # Final timestep
+    results = walks.process_one_timestep(
+        num_walks=5,
+        current_graph=previous_graph,
+        next_graph=previous_graph,
+        queries=converted_queries,
+        c=2,
+        epsilon=0.25,
+        k=K,
+        decay_rate=0.03,
+        t=total_timesteps-1,
+        has_next=False,
+        total_timesteps=total_timesteps
+    )
+
+    print("Processing final summaries...")
+
+    top_k_cumsum_walks = results["top_k_cumsum_walks"]
+    weights = results["all_weights"]
+    runtime_per_timestep = results["runtime_per_timestep"]
+    non_topk_global_pr = results["global_pr"]
+    for timestep, runtime in runtime_per_timestep.items():
+        print(f"Timestep {timestep}: Runtime for walks = {runtime:.4f} seconds")
+
+    runtime_df = pd.DataFrame(
+        [{"Timestep": t, "Runtime (walks)": runtime}
+         for t, runtime in runtime_per_timestep.items()]
+    ).sort_values(by="Timestep")
+
+    # triples_no, sankofa = process_summary_sankofa(
+    #     top_k_cumsum_walks,
+    #     None,  # no full graphs stored
+    #     label="Cumsum Walks",
+    #     weights=weights,
+    #     global_pr_dict=non_topk_global_pr,
+    #     test_data=test_data,
+    #     walks_runtime=runtime_df,
+    #     max_triples=summary_size
+    # )
+
+    triples_no, sankofa = process_summary_sankofa_streaming(
+        top_k_cumsum_walks,
+        snapshot_files,
+        subgraph_dir,
+        label="Cumsum Walks",
+        weights=weights,
+        global_pr_dict=non_topk_global_pr,
+        test_data=test_data,
+        walks_runtime=runtime_df,
+        max_triples=summary_size
+    )
+
+    sankofa.to_csv("sankofa_results.csv", index=False)
+
+    print("Done.")
 
 if __name__ == "__main__":
     main()
