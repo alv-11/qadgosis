@@ -12,9 +12,10 @@ from src.base import DBPedia
 from src.user import query_log_by_mids
 from src.glimpse import SummaryMethod, GLIMPSE
 from src.isummary import ISUMMARY
-from src.metrics import total_query_log_metrics
+from src.metrics import total_query_log_metrics, average_query_log_metrics
 from src.apex import APEX
 import pickle
+import re
 
 
 
@@ -775,7 +776,7 @@ def save_or_load_query_log(query_log_file, graph, timestep):
         return query_log
     
 
-    
+
 
 def process_snapshots(subgraph_dir):
     """Process all snapshots and generate graphs, query logs, and training/test data."""
@@ -790,6 +791,7 @@ def process_snapshots(subgraph_dir):
     #print("Loading all subgraph snapshots...")
 
     for i, file_name in enumerate(snapshot_files):
+        #file_name = "snapshot_1.nt.gz"
         path = os.path.join(subgraph_dir, file_name)
         KG = DBPedia(rdf_gz=path)
         KG.load()
@@ -810,6 +812,10 @@ def process_snapshots(subgraph_dir):
     return graphs, training_data, test_data, queries_
 
 
+
+###########################################################################################
+
+
 def load_single_snapshot(subgraph_dir, file_name):
     """
     Load exactly one snapshot and return the KG.
@@ -818,6 +824,99 @@ def load_single_snapshot(subgraph_dir, file_name):
     KG = DBPedia(rdf_gz=path)
     KG.load()
     return KG
+
+
+import pickle
+from pathlib import Path
+
+def prepare_queries_and_splits_(subgraph_dir):
+    """
+    Use ONE graph snapshot,
+    but stream ALL existing query logs as timesteps.
+    No query generation allowed.
+    """
+
+    training_data, test_data, queries_ = {}, {}, {}
+
+    # --------------------------------------------------
+    # 1️⃣ Get available graph snapshots
+    # --------------------------------------------------
+    files = os.listdir(subgraph_dir)
+    snapshot_files_all = sorted(
+        [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
+        key=extract_snapshot_number
+    )
+
+    if not snapshot_files_all:
+        raise ValueError("No graph snapshots found.")
+
+    # 🔥 Always use the FIRST snapshot file
+    single_snapshot = snapshot_files_all[0]
+    #print(f"Using single graph snapshot: {single_snapshot}")
+
+    # --------------------------------------------------
+    # 2️⃣ Load ALL existing query logs
+    # --------------------------------------------------
+    QUERY_LOG_SOURCE = Path("/Users/au735195/Downloads/ExploratoryQueryingSessions-main/sessions/querylog/query_logsfinal_snapshots")#("/Users/au735195/Downloads/ExploratoryQueryingSessions-main/sessions/query_logs_snapshots_test")
+
+    query_files = list(
+        QUERY_LOG_SOURCE.glob("query_log_snapshot_*.pkl")
+    )
+
+    if not query_files:
+        raise ValueError("No query snapshot files found.")
+    
+
+    query_files.sort(
+    key=lambda p: int(p.stem.split("_")[-1])
+    )
+    
+
+    query_files = sorted(
+        query_files,
+        key=lambda p: int(re.search(r"query_log_snapshot_(\d+)\.pkl", p.name).group(1))
+    )
+
+    # We fake snapshot_files so main() still works
+    snapshot_files = [single_snapshot] * len(query_files)
+    # snapshot_files = sorted(
+    #     [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
+    #     key=extract_snapshot_number
+    # )
+
+    
+
+    #for i, qfile in enumerate(query_files):
+    for i, (qfile, file_name) in enumerate(zip(query_files, snapshot_files)):
+
+        #print(f"Loading queries from {qfile.name}")
+        print(f"Using single graph snapshot: {file_name}, and query log: {qfile.name} for timestep {i}")
+
+        # Load graph (same one every time)
+        path = os.path.join(subgraph_dir, file_name)
+        KG = DBPedia(rdf_gz=path)
+        KG.load()
+
+        with open(qfile, "rb") as f:
+            query_log = pickle.load(f)
+
+        if not query_log:
+            del KG
+            continue
+
+        split_idx = int(0.8 * len(query_log))
+        training_data[i] = query_log[:split_idx]
+        test_data[i] = query_log[split_idx:]
+        queries_[i] = [
+            q['Parse']['TopicEntityMid']
+            for q in training_data[i]
+        ]
+
+        del KG  # Free memory immediately
+
+    print("Prepared query logs (single-graph, multi-query mode).")
+
+    return training_data, test_data, queries_, snapshot_files
 
 
 def prepare_queries_and_splits(subgraph_dir):
@@ -988,3 +1087,197 @@ def process_summary_sankofa_streaming(
     print(sankofa)
 
     return triples_no, sankofa
+
+
+class BaselineEngine:
+
+    def __init__(self, methods):
+        self.methods = methods
+        self.apex_state = {
+            "H": None,
+            "q": None,
+            "e": None,
+            "r": None,
+            "csr": None,
+            "index_list": None
+        }
+
+        self.present_rows = {
+            "Glimpse": [],
+            "Apex": [],
+            "Isummary": []
+        }
+
+        self.weighted_rows = {
+            "Glimpse": [],
+            "Apex": [],
+            "Isummary": []
+        }
+
+    def process_timestep(self, KG, t, K, training_data, test_data, weights):
+
+        for name in self.methods:
+
+            if name == "glimpse":
+                self._run_glimpse(KG, t, K, training_data, test_data, weights)
+
+            elif name == "apex":
+                self._run_apex(KG, t, K, training_data, test_data, weights)
+
+            elif name == "isummary":
+                self._run_isummary(KG, t, K, training_data, test_data, weights)
+
+
+
+    def _run_glimpse(self, KG, t, K, training_data, test_data, weights):
+
+        norm_w = _normalize_weights(weights)
+
+        if t == 0:
+            merged_logs = training_data[t]
+        else:
+            N = 2
+            keys = sorted(training_data.keys())
+            idx = keys.index(t)
+            start = max(0, idx - N + 1)
+            selected = keys[start: idx + 1]
+            merged_logs = list(flatten_list([training_data[k] for k in selected]))
+
+        t0 = time.time()
+        S = METHODS["glimpse"](KG, K, merged_logs)
+        run_time = time.time() - t0
+
+        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
+
+        self.present_rows["Glimpse"].append({
+            "Timestep": t,
+            "Glimpse Present F1": total_F1,
+            "Glimpse Runtime (seconds)": run_time
+        })
+
+        df_w = process_all_timesteps(
+            training_set=test_data,
+            summary=S,
+            i=t,
+            test_weights=norm_w
+        )
+
+        self.weighted_rows["Glimpse"].append(df_w)
+
+
+    def _run_apex(self, KG, t, K, training_data, test_data, weights):
+
+        test_w = weights
+
+        if t == 0:
+            P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+                KG, K, training_data[t], test_data[t], t=t
+            )
+        else:
+            try:
+                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+                    KG, K, training_data[t], test_data[t],
+                    t=t,
+                    H=self.apex_state["H"],
+                    q=self.apex_state["q"],
+                    e=self.apex_state["e"],
+                    r=self.apex_state["r"],
+                    csr_indirect_matrices=self.apex_state["csr"],
+                    index_list=self.apex_state["index_list"]
+                )
+            except Exception:
+                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+                    KG, K, training_data[t], test_data[t], t=t
+                )
+
+        self.apex_state.update({
+            "H": H,
+            "q": q,
+            "e": e,
+            "r": r,
+            "csr": csr,
+            "index_list": index_list
+        })
+
+        self.present_rows["Apex"].append({
+            "Timestep": t,
+            "Apex Present F1": total_F1,
+            "Apex Runtime (seconds)": run_time
+        })
+
+        df_w = process_all_timesteps(
+            training_set=test_data,
+            summary=P,
+            i=t,
+            test_weights=_normalize_weights(test_w)
+        )
+
+        self.weighted_rows["Apex"].append(df_w)
+
+
+    def _run_isummary(self, KG, t, K, training_data, test_data, weights):
+
+        norm_w = _normalize_weights(weights)
+
+        if t == 0:
+            t0 = time.time()
+            S = METHODS["isummary"](KG, K, training_data[t])
+            run_time = time.time() - t0
+        else:
+            N = 2
+            keys = sorted(training_data.keys())
+            idx = keys.index(t)
+            start = max(0, idx - N + 1)
+            selected = keys[start: idx + 1]
+            merged_logs = list(flatten_list([training_data[k] for k in selected]))
+
+            t0 = time.time()
+            S = METHODS["isummary"](KG, K, merged_logs)
+            run_time = time.time() - t0
+
+        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
+
+        self.present_rows["Isummary"].append({
+            "Timestep": t,
+            "Isummary Present F1": total_F1,
+            "Isummary Runtime (seconds)": run_time
+        })
+
+        df_w = process_all_timesteps(
+            training_set=test_data,
+            summary=S,
+            i=t,
+            test_weights=norm_w
+        )
+
+        self.weighted_rows["Isummary"].append(df_w)
+
+    def finalize(self):
+
+        merged_results = []
+
+        for method in self.present_rows.keys():
+
+            present = self.present_rows[method]
+            weighted = self.weighted_rows[method]
+
+            if not present:
+                continue
+
+            merged = _merge_present_and_weighted(
+                present,
+                weighted,
+                f"{method} Present F1",
+                f"Weighted {method} F1"
+            )
+
+            merged_results.append(merged)
+
+        if not merged_results:
+            return pd.DataFrame()
+
+        sota = merged_results[0]
+        for df in merged_results[1:]:
+            sota = pd.merge(sota, df, on="Timestep", how="inner")
+
+        return sota

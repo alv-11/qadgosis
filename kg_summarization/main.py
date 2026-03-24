@@ -1,6 +1,6 @@
 
 import pandas as pd
-from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, load_single_snapshot, process_summary_sankofa_streaming
+from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, load_single_snapshot, process_summary_sankofa_streaming, BaselineEngine
 import src.core.sankofa  as walks
 import sys
 from pathlib import Path
@@ -116,8 +116,140 @@ def main_():
     # merged_df.to_csv("all_results.csv", index=False)
 
 
+# def _main_():
+#     subgraph_dir = "data/wiki"
+
+#     print("Preparing queries...")
+#     training_data, test_data, queries_, snapshot_files = \
+#         prepare_queries_and_splits(subgraph_dir)
+
+#     total_timesteps = len(snapshot_files)
+
+#     converted_queries = {
+#         int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
+#         for timestep, query_list in queries_.items()
+#     }
+
+#     previous_graph = None
+#     results = None
+#     summary_size = None
+#     K = None
+
+#     print("Streaming snapshots into C++...")
+
+#     for t, file_name in enumerate(snapshot_files):
+
+
+#         print(f"Loading {file_name}")
+
+#         KG = load_single_snapshot(subgraph_dir, file_name)
+#         G = analyze_graph_properties(KG, t)
+
+#         # Compute summary parameters once
+#         if t == 0:
+#             b = 0.05
+#             summary_size = int(len(G.edges) * b)
+#             k1 = (len(G.nodes))**2 / len(G.edges)
+#             K = int(k1 / (0.1/b))
+
+#             print(f"Summary triple size: {summary_size}")
+#             # print("density:",
+#             #       len(G.edges) / (len(G.nodes) * (len(G.nodes) - 1)))
+
+#         # Convert graph to C++ format
+#         current_graph = {
+#             int(node): {
+#                 int(neighbor): float(G[node][neighbor].get("weight", 0.0001))
+#                 for neighbor in G.neighbors(node)
+#             }
+#             for node in G.nodes
+#         }
+
+#         # Free heavy KG immediately
+#         del KG
+#         del G
+
+#         if previous_graph is None:
+#             previous_graph = current_graph
+#             continue
+
+#         results = walks.process_one_timestep(
+#             num_walks=5,
+#             current_graph=previous_graph,
+#             next_graph=current_graph,
+#             queries=converted_queries,
+#             c=2,
+#             epsilon=0.25,
+#             k=K,
+#             decay_rate=0.03,
+#             t=t-1,
+#             has_next=True,
+#             total_timesteps=total_timesteps
+#         )
+
+#         del previous_graph
+#         previous_graph = current_graph
+
+#     # Final timestep
+#     results = walks.process_one_timestep(
+#         num_walks=5,
+#         current_graph=previous_graph,
+#         next_graph=previous_graph,
+#         queries=converted_queries,
+#         c=2,
+#         epsilon=0.25,
+#         k=K,
+#         decay_rate=0.03,
+#         t=total_timesteps-1,
+#         has_next=False,
+#         total_timesteps=total_timesteps
+#     )
+
+#     print("Processing final summaries...")
+
+#     top_k_cumsum_walks = results["top_k_cumsum_walks"]
+#     weights = results["all_weights"]
+#     runtime_per_timestep = results["runtime_per_timestep"]
+#     non_topk_global_pr = results["global_pr"]
+#     for timestep, runtime in runtime_per_timestep.items():
+#         print(f"Timestep {timestep}: Runtime for walks = {runtime:.4f} seconds")
+
+#     runtime_df = pd.DataFrame(
+#         [{"Timestep": t, "Runtime (walks)": runtime}
+#          for t, runtime in runtime_per_timestep.items()]
+#     ).sort_values(by="Timestep")
+
+#     # triples_no, sankofa = process_summary_sankofa(
+#     #     top_k_cumsum_walks,
+#     #     None,  # no full graphs stored
+#     #     label="Cumsum Walks",
+#     #     weights=weights,
+#     #     global_pr_dict=non_topk_global_pr,
+#     #     test_data=test_data,
+#     #     walks_runtime=runtime_df,
+#     #     max_triples=summary_size
+#     # )
+
+#     triples_no, sankofa = process_summary_sankofa_streaming(
+#         top_k_cumsum_walks,
+#         snapshot_files,
+#         subgraph_dir,
+#         label="Cumsum Walks",
+#         weights=weights,
+#         global_pr_dict=non_topk_global_pr,
+#         test_data=test_data,
+#         walks_runtime=runtime_df,
+#         max_triples=summary_size
+#     )
+
+#     sankofa.to_csv("sankofa_results.csv", index=False)
+
+#     print("Done.")
+
+
 def main():
-    subgraph_dir = "data/wiki"
+
+    subgraph_dir =  "/home/ama/wiki_new/wiki_all"#"/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
 
     print("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
@@ -137,25 +269,26 @@ def main():
 
     print("Streaming snapshots into C++...")
 
+    # ==========================================================
+    # PHASE 1 — STREAM INTO C++ (INCREMENTAL SANKOFA ENGINE)
+    # ==========================================================
+
     for t, file_name in enumerate(snapshot_files):
+
 
         print(f"Loading {file_name}")
 
         KG = load_single_snapshot(subgraph_dir, file_name)
         G = analyze_graph_properties(KG, t)
 
-        # Compute summary parameters once
         if t == 0:
-            b = 0.1
+            b = 0.005
             summary_size = int(len(G.edges) * b)
             k1 = (len(G.nodes))**2 / len(G.edges)
-            K = int(k1 / (0.1/b))
+            K = int(k1 / (0.1 / b))
 
             print(f"Summary triple size: {summary_size}")
-            # print("density:",
-            #       len(G.edges) / (len(G.nodes) * (len(G.nodes) - 1)))
 
-        # Convert graph to C++ format
         current_graph = {
             int(node): {
                 int(neighbor): float(G[node][neighbor].get("weight", 0.0001))
@@ -164,7 +297,6 @@ def main():
             for node in G.nodes
         }
 
-        # Free heavy KG immediately
         del KG
         del G
 
@@ -180,7 +312,7 @@ def main():
             c=2,
             epsilon=0.25,
             k=K,
-            decay_rate=0.03,
+            decay_rate=0.01,
             t=t-1,
             has_next=True,
             total_timesteps=total_timesteps
@@ -198,50 +330,93 @@ def main():
         c=2,
         epsilon=0.25,
         k=K,
-        decay_rate=0.03,
-        t=total_timesteps-1,
+        decay_rate=0.01,
+        t=total_timesteps - 1,
         has_next=False,
         total_timesteps=total_timesteps
     )
 
-    print("Processing final summaries...")
+    print("Finished C++ streaming.")
 
+    # Extract Sankofa outputs
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
     weights = results["all_weights"]
     runtime_per_timestep = results["runtime_per_timestep"]
     non_topk_global_pr = results["global_pr"]
-    for timestep, runtime in runtime_per_timestep.items():
-        print(f"Timestep {timestep}: Runtime for walks = {runtime:.4f} seconds")
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime}
          for t, runtime in runtime_per_timestep.items()]
     ).sort_values(by="Timestep")
 
-    # triples_no, sankofa = process_summary_sankofa(
-    #     top_k_cumsum_walks,
-    #     None,  # no full graphs stored
-    #     label="Cumsum Walks",
-    #     weights=weights,
-    #     global_pr_dict=non_topk_global_pr,
-    #     test_data=test_data,
-    #     walks_runtime=runtime_df,
-    #     max_triples=summary_size
-    # )
+    # ==========================================================
+    # PHASE 2 — SINGLE STREAMING EVALUATION
+    # ==========================================================
 
-    triples_no, sankofa = process_summary_sankofa_streaming(
-        top_k_cumsum_walks,
-        snapshot_files,
-        subgraph_dir,
-        label="Cumsum Walks",
-        weights=weights,
-        global_pr_dict=non_topk_global_pr,
-        test_data=test_data,
-        walks_runtime=runtime_df,
-        max_triples=summary_size
+    print("Evaluating Sankofa + Baselines (single pass)...")
+
+    sankofa_rows = []
+    triples_no = {}
+
+    baseline_engine = BaselineEngine(
+        methods=["glimpse"]#, "apex", "isummary"]
     )
 
+    for t, file_name in enumerate(snapshot_files):
+
+        print(f"Evaluating {file_name}")
+
+        KG = load_single_snapshot(subgraph_dir, file_name)
+
+        if t not in top_k_cumsum_walks:
+            del KG
+            continue
+
+        # ------------------- SANKOFA -------------------
+        triples_no_t, sankofa_df = process_summary_sankofa_streaming(
+            top_k_nodes_dict={t: top_k_cumsum_walks[t]},
+            snapshot_files=snapshot_files,
+            subgraph_dir=subgraph_dir,
+            label="Cumsum Walks",
+            weights={t: weights[t]},
+            global_pr_dict={t: non_topk_global_pr[t]},
+            test_data={t: test_data[t]},
+            walks_runtime=runtime_df[runtime_df["Timestep"] == t],
+            max_triples=summary_size
+        )
+
+
+        triples_no[t] = triples_no_t[t]
+        sankofa_rows.append(sankofa_df)
+
+        # ------------------- BASELINES -------------------
+
+        baseline_engine.process_timestep(
+            KG=KG,
+            t=t,
+            K=triples_no[t],
+            training_data=training_data,
+            test_data=test_data,
+            weights=weights[t]
+        )
+
+        del KG
+
+    # ==========================================================
+    # FINAL MERGE
+    # ==========================================================
+
+    sankofa = pd.concat(sankofa_rows, ignore_index=True)
     sankofa.to_csv("sankofa_results.csv", index=False)
+
+    sota = baseline_engine.finalize()
+
+    if not sota.empty:
+        merged_df = pd.merge(sankofa, sota, on="Timestep", how="inner")
+        merged_df.to_csv("all_results.csv", index=False)
+    else:
+        print("No baseline results produced.")
+        merged_df = sankofa
 
     print("Done.")
 
