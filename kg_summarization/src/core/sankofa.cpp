@@ -159,8 +159,6 @@ RandomWalkResult generate_random_walks_directed_weighted(
     for (const auto& p : weighted_graph)
         nodes.push_back(p.first);
 
-    int walk_id = 0;
-
     // For each node, generate `walks_per_node` walks
     for (int start_node : nodes) {
         for (int w = 0; w < walks_per_node; w++) {
@@ -169,7 +167,7 @@ RandomWalkResult generate_random_walks_directed_weighted(
             int current = start_node;
             walk.push_back(current);
 
-            for (int j = 1; j < walk_length; j++) {
+            for (int j = 0; j < walk_length; j++) {
                 auto it = weighted_graph.find(current);
                 if (it == weighted_graph.end() || it->second.empty())
                     break;
@@ -198,8 +196,7 @@ RandomWalkResult generate_random_walks_directed_weighted(
                 walk.push_back(current);
             }
 
-            result.precomputed_walks[walk_id].push_back(walk);
-            walk_id++;
+            result.precomputed_walks[start_node].push_back(walk);
         }
     }
 
@@ -316,29 +313,54 @@ unordered_map<int, vector<vector<string>>> process_walk_results(const unordered_
 // An implementation of a personalized PageRank–like random walk.
 // Starting from node w, it performs L steps; with probability epsilon it teleports to w,
 // and otherwise it randomly follows an outgoing edge.
-vector<int> compute_personalized_pagerank(int w, int L, double epsilon, 
-                                          const unordered_map<int, vector<vector<string>>> &R,
+vector<int> compute_personalized_pagerank(int w, int L, double epsilon,
+                                          const unordered_map<int, vector<vector<int>>> &R,
                                           const DirectedGraph &directed_graph) {
     vector<int> walk;
     int current = w;
     random_device rd;
     mt19937 gen(rd());
     uniform_real_distribution<> dis(0.0, 1.0);
-    
+    unordered_map<int, vector<vector<int>>> available_segments = R;
+
     walk.push_back(current);
     for (int i = 1; i < L; i++) {
         if (dis(gen) < epsilon) {
             current = w;
         } else {
-            if (directed_graph.find(current) != directed_graph.end() && !directed_graph.at(current).empty()) {
+            auto segments_it = available_segments.find(current);
+            if (segments_it != available_segments.end() && !segments_it->second.empty()) {
+                auto& segments = segments_it->second;
+                uniform_int_distribution<> segment_dist(0, segments.size() - 1);
+                int segment_index = segment_dist(gen);
+                vector<int> segment = std::move(segments[segment_index]);
+                segments.erase(segments.begin() + segment_index);
+
+                size_t segment_start = (!segment.empty() && segment.front() == current) ? 1 : 0;
+                for (size_t j = segment_start; j < segment.size() && walk.size() < static_cast<size_t>(L); ++j) {
+                    current = segment[j];
+                    walk.push_back(current);
+                }
+
+                if (walk.size() < static_cast<size_t>(L)) {
+                    current = w;
+                }
+            } else if (directed_graph.find(current) != directed_graph.end() && !directed_graph.at(current).empty()) {
                 const vector<int>& neighbors = directed_graph.at(current);
                 uniform_int_distribution<> dis2(0, neighbors.size() - 1);
                 current = neighbors[dis2(gen)];
+            } else {
+                current = w;
             }
         }
+
+        if (walk.size() >= static_cast<size_t>(L)) {
+            break;
+        }
+
         walk.push_back(current);
     }
-    
+
     return walk;
 }
 
@@ -543,6 +565,7 @@ TopKSummaryWithWeights generate_top_k_summary(
     std::unordered_map<int, double> runtime_per_timestep; // Dictionary to store runtimes
     std::unordered_map<int, double> cumCounts;
     std::unordered_map<int, std::unordered_map<int, int>> counters;  // counters for each timestep
+    const int window_size = 5;
 
 
     // Result per timestep
@@ -619,7 +642,7 @@ TopKSummaryWithWeights generate_top_k_summary(
             dest.insert(dest.end(), walks.begin(), walks.end());
         }
 
-        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, processed_R, directed_graph);
+        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, R.precomputed_walks, directed_graph);
 
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
@@ -627,7 +650,7 @@ TopKSummaryWithWeights generate_top_k_summary(
         auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);
 
         // Calculate top-k cumulative wi
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c, epsilon);
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
     
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
         summary.global_pr[t] = top_k_result.nontop_k;
@@ -746,7 +769,7 @@ TopKSummaryWithWeights process_one_timestep(
     double decay_rate,
     int t,
     bool has_next,
-    int total_timesteps
+    int window_size
 ) {
     // TopKSummary summary;
     // std::unordered_map<int, std::unordered_map<int, double>> weights; // Declare weights
@@ -836,7 +859,7 @@ TopKSummaryWithWeights process_one_timestep(
             dest.insert(dest.end(), walks.begin(), walks.end());
         }
 
-        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, processed_R, directed_graph);
+        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, R.precomputed_walks, directed_graph);
 
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
@@ -845,7 +868,7 @@ TopKSummaryWithWeights process_one_timestep(
 
         // Calculate top-k cumulative wi
         //auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c, epsilon);
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, total_timesteps, n,c, epsilon);
+        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
     
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
         summary.global_pr[t] = top_k_result.nontop_k;
@@ -969,7 +992,7 @@ py::dict wrap_process_one_timestep(
     double decay_rate,
     int t,
     bool has_next,
-    int total_timesteps
+    int window_size
 ) {
 
     TopKSummaryWithWeights result =
@@ -984,7 +1007,7 @@ py::dict wrap_process_one_timestep(
             decay_rate,
             t,
             has_next,
-            total_timesteps
+            window_size
         );
 
     TopKSummary summary = result.summary;
@@ -1080,6 +1103,6 @@ PYBIND11_MODULE(sankofa, m) {
           py::arg("decay_rate"),
           py::arg("t"),
           py::arg("has_next"),
-          py::arg("total_timesteps")
+            py::arg("window_size") = 5
     );
 }

@@ -83,7 +83,7 @@ def main_():
             decay_rate=0.8,
             t=t,
             has_next=has_next,
-            total_timesteps=total_timesteps
+            window_size=5
         )
     # Process summaries and evaluate
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
@@ -315,7 +315,7 @@ def main():
             decay_rate=0.01,
             t=t-1,
             has_next=True,
-            total_timesteps=total_timesteps
+            window_size=5
         )
 
         del previous_graph
@@ -333,7 +333,7 @@ def main():
         decay_rate=0.01,
         t=total_timesteps - 1,
         has_next=False,
-        total_timesteps=total_timesteps
+        window_size=5
     )
 
     print("Finished C++ streaming.")

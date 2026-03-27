@@ -20,6 +20,35 @@ import re
 
 
 
+def _extract_seed_nodes_from_query(query):
+    """Return Sankofa seed nodes from answer entities, fallback to topic entity."""
+    parse = query.get("Parse", {}) if isinstance(query, dict) else {}
+    answers = parse.get("Answers", [])
+
+    seed_nodes = []
+    for ans in answers:
+        if not isinstance(ans, dict):
+            continue
+        if ans.get("AnswerType") != "Entity":
+            continue
+        answer_arg = ans.get("AnswerArgument")
+        if answer_arg is not None:
+            seed_nodes.append(answer_arg)
+
+    if seed_nodes:
+        return seed_nodes
+
+    topic_entity = parse.get("TopicEntityMid")
+    return [topic_entity] if topic_entity is not None else []
+
+
+def _build_seed_node_list(training_queries):
+    seed_nodes = []
+    for query in training_queries:
+        seed_nodes.extend(_extract_seed_nodes_from_query(query))
+    return seed_nodes
+
+
 def weighted_sampling(items, weights, k):
     """
     ES (Efraimidis–Spirakis) weighted sampling without replacement.
@@ -805,7 +834,7 @@ def process_snapshots(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = [q['Parse']['TopicEntityMid'] for q in training_data[i]]
+        queries_[i] = _build_seed_node_list(training_data[i])
     
     action = "Loaded existing" if os.path.exists(query_log_file) else "Generated new"
     print(f"{action} query_logs")
@@ -907,10 +936,7 @@ def prepare_queries_and_splits_(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = [
-            q['Parse']['TopicEntityMid']
-            for q in training_data[i]
-        ]
+        queries_[i] = _build_seed_node_list(training_data[i])
 
         del KG  # Free memory immediately
 
@@ -947,7 +973,7 @@ def prepare_queries_and_splits(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = [q['Parse']['TopicEntityMid'] for q in training_data[i]]
+        queries_[i] = _build_seed_node_list(training_data[i])
 
         # Free memory immediately
         del KG
