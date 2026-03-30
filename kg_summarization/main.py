@@ -304,6 +304,9 @@ def main():
             previous_graph = current_graph
             continue
 
+        
+        print(f"Processing timestep {t} in C++...")
+
         results = walks.process_one_timestep(
             num_walks=5,
             current_graph=previous_graph,
@@ -312,7 +315,7 @@ def main():
             c=2,
             epsilon=0.25,
             k=K,
-            decay_rate=0.01,
+            decay_rate=0.8,
             t=t-1,
             has_next=True,
             window_size=5
@@ -330,7 +333,7 @@ def main():
         c=2,
         epsilon=0.25,
         k=K,
-        decay_rate=0.01,
+        decay_rate=0.8,
         t=total_timesteps - 1,
         has_next=False,
         window_size=5
@@ -342,6 +345,7 @@ def main():
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
     weights = results["all_weights"]
     runtime_per_timestep = results["runtime_per_timestep"]
+    #print("Walk runtimes per timestep:", runtime_per_timestep)
     non_topk_global_pr = results["global_pr"]
 
     runtime_df = pd.DataFrame(
@@ -353,7 +357,7 @@ def main():
     # PHASE 2 — SINGLE STREAMING EVALUATION
     # ==========================================================
 
-    print("Evaluating Sankofa + Baselines (single pass)...")
+    print("Evaluating Sankofa + Baselines...")
 
     sankofa_rows = []
     triples_no = {}

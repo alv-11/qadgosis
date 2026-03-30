@@ -773,36 +773,36 @@ def analyze_graph_properties(graph, timestep):
     return G
 
 
-def generate_query_logs(graph, timestep, num_queries=200):
-    """Generate query logs for a given graph."""
-    topic_mids = random.sample(list(graph.triples_.keys()), k=5)
-    valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
-    if not valid_topic_mids:
-        print(f"No valid topic_mids found in KG for snapshot {timestep}")
-        return None
+# def generate_query_logs(graph, timestep, num_queries=200):
+#     """Generate query logs for a given graph."""
+#     topic_mids = random.sample(list(graph.triples_.keys()), k=5)
+#     valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
+#     if not valid_topic_mids:
+#         print(f"No valid topic_mids found in KG for snapshot {timestep}")
+#         return None
 
-    query_log = query_log_by_mids(
-        graph,
-        valid_topic_mids,
-        num_queries,
-        topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
-        shuffle=True,
-        random_query_prob=0
-    )
-    return query_log
+#     query_log = query_log_by_mids(
+#         graph,
+#         valid_topic_mids,
+#         num_queries,
+#         topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
+#         shuffle=True,
+#         random_query_prob=0
+#     )
+#     return query_log
 
 
-def save_or_load_query_log(query_log_file, graph, timestep):
-    """Save or load query logs from a file."""
+# def save_or_load_query_log(query_log_file, graph, timestep):
+#     """Save or load query logs from a file."""
 
-    if os.path.exists(query_log_file):
-        with open(query_log_file, "rb") as f:
-            return pickle.load(f)
-    else:
-        query_log = generate_query_logs(graph, timestep)
-        with open(query_log_file, "wb") as f:
-            pickle.dump(query_log, f)
-        return query_log
+#     if os.path.exists(query_log_file):
+#         with open(query_log_file, "rb") as f:
+#             return pickle.load(f)
+#     else:
+#         query_log = generate_query_logs(graph, timestep)
+#         with open(query_log_file, "wb") as f:
+#             pickle.dump(query_log, f)
+#         return query_log
     
 
 
@@ -945,7 +945,7 @@ def prepare_queries_and_splits_(subgraph_dir):
     return training_data, test_data, queries_, snapshot_files
 
 
-def prepare_queries_and_splits(subgraph_dir):
+def prepare_queries_and_splits__(subgraph_dir):
     """
     Generate training/test splits and query lists
     WITHOUT storing all graphs in memory.
@@ -1307,3 +1307,148 @@ class BaselineEngine:
             sota = pd.merge(sota, df, on="Timestep", how="inner")
 
         return sota
+    
+
+
+
+###############################################################NEW CHAPTER####################################################################
+################################################################################################################################################
+import random
+
+def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4):
+    """
+    Fixed number of topics per timestep.
+    40% change, 60% persist.
+    Only keeps topics valid in current graph.
+    """
+
+    all_nodes = list(graph.triples_.keys())
+
+    # First timestep
+    if prev_topics is None:
+        return random.sample(all_nodes, k=min(K, len(all_nodes)))
+
+    # Keep only topics still in graph
+    valid_prev = [t for t in prev_topics if t in graph.triples_]
+
+    # Number to keep
+    num_keep_target = int((1 - change_ratio) * K)
+    num_keep = min(num_keep_target, len(valid_prev))
+
+    kept = random.sample(valid_prev, k=num_keep) if num_keep > 0 else []
+
+    # Fill remaining with new topics
+    num_new = K - len(kept)
+    candidates = list(set(all_nodes) - set(kept))
+
+    if len(candidates) >= num_new:
+        new_topics = random.sample(candidates, k=num_new)
+    else:
+        new_topics = candidates
+
+    topics = kept + new_topics
+
+    # Ensure exactly K topics
+    if len(topics) < K:
+        extra_needed = K - len(topics)
+        extra_candidates = list(set(all_nodes) - set(topics))
+        if extra_candidates:
+            topics += random.sample(
+                extra_candidates,
+                k=min(extra_needed, len(extra_candidates))
+            )
+
+    topics = topics[:K]
+
+    # Safety check
+    assert all(t in graph.triples_ for t in topics)
+
+    return topics
+
+
+
+def generate_query_logs(graph, timestep, topic_mids, num_queries=200):
+    """Generate query logs using given topics."""
+
+    valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
+
+    if not valid_topic_mids:
+        print(f"No valid topic_mids found in KG for snapshot {timestep}")
+        return None
+
+    query_log = query_log_by_mids(
+        graph,
+        valid_topic_mids,
+        num_queries,
+        topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
+        shuffle=True,
+        random_query_prob=0
+    )
+
+    return query_log
+
+
+def save_or_load_query_log(query_log_file, graph, timestep, topic_mids):
+    """Save or load query logs from a file."""
+
+    # Load if exists (DO NOT regenerate)
+    if os.path.exists(query_log_file):
+        with open(query_log_file, "rb") as f:
+            return pickle.load(f)
+
+    # Otherwise generate using topics
+    query_log = generate_query_logs(graph, timestep, topic_mids)
+
+    with open(query_log_file, "wb") as f:
+        pickle.dump(query_log, f)
+
+    return query_log
+
+
+def prepare_queries_and_splits(subgraph_dir):
+    """
+    Generate training/test splits and query lists
+    WITHOUT storing all graphs in memory.
+    """
+    training_data, test_data, queries_ = {}, {}, {}
+
+    files = os.listdir(subgraph_dir)
+    snapshot_files = sorted(
+        [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
+        key=extract_snapshot_number
+    )
+
+    prev_topics = None  # 🔑 track topic evolution
+
+    for i, file_name in enumerate(snapshot_files):
+        path = os.path.join(subgraph_dir, file_name)
+
+        KG = DBPedia(rdf_gz=path)
+        KG.load()
+
+        # 🔑 Update topics (fixed size + 40% change)
+        current_topics = update_topics_fixed(prev_topics, KG, K=5, change_ratio=0.4)
+        prev_topics = current_topics
+
+        query_log_file = f"query_log_snapshot_{i}.pkl"
+
+        query_log = save_or_load_query_log(
+            query_log_file, KG, i, current_topics
+        )
+
+        print(f"Timestep {i}: {len(current_topics)} topics")
+
+        if not query_log:
+            del KG
+            continue
+
+        split_idx = int(0.8 * len(query_log))
+        training_data[i] = query_log[:split_idx]
+        test_data[i] = query_log[split_idx:]
+        queries_[i] = _build_seed_node_list(training_data[i])
+
+        del KG  # free memory
+
+    print("Prepared query logs (streaming mode).")
+
+    return training_data, test_data, queries_, snapshot_files
