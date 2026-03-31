@@ -249,7 +249,7 @@ def main_():
 
 def main():
 
-    subgraph_dir =  "/home/ama/wiki_new/wiki_all"#"/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
+    subgraph_dir =  "/home/ama/wiki_new/wiki_98"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
 
     print("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
@@ -315,7 +315,7 @@ def main():
             c=2,
             epsilon=0.25,
             k=K,
-            decay_rate=0.8,
+            decay_rate=0.03,
             t=t-1,
             has_next=True,
             window_size=5
@@ -333,7 +333,7 @@ def main():
         c=2,
         epsilon=0.25,
         k=K,
-        decay_rate=0.8,
+        decay_rate=0.03,
         t=total_timesteps - 1,
         has_next=False,
         window_size=5
@@ -347,6 +347,26 @@ def main():
     runtime_per_timestep = results["runtime_per_timestep"]
     #print("Walk runtimes per timestep:", runtime_per_timestep)
     non_topk_global_pr = results["global_pr"]
+    changes_in_topk = results["changes_over_time"]
+
+
+
+
+
+    count_changes = []
+
+    for timestep, changes in changes_in_topk.items():
+        count_changes.append({
+            "timestep": int(timestep),
+            "nodes_added": len(changes.get("nodes_added", [])),
+            "nodes_removed": len(changes.get("nodes_removed", [])),
+            "edges_added": len(changes.get("edges_added", [])),
+            "edges_removed": len(changes.get("edges_removed", [])),
+        })
+
+
+
+    df_changes = pd.DataFrame(count_changes).sort_values(by="timestep")
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime}
@@ -363,7 +383,7 @@ def main():
     triples_no = {}
 
     baseline_engine = BaselineEngine(
-        methods=["glimpse"]#, "apex", "isummary"]
+        methods=[]#["glimpse"]#, "apex", "isummary"]
     )
 
     for t, file_name in enumerate(snapshot_files):
@@ -409,9 +429,12 @@ def main():
     # ==========================================================
     # FINAL MERGE
     # ==========================================================
-
+    import json
     sankofa = pd.concat(sankofa_rows, ignore_index=True)
     sankofa.to_csv("sankofa_results.csv", index=False)
+    with open("changes_in_topk.json", "w") as f:
+        json.dump(changes_in_topk, f, indent=4)
+    df_changes.to_csv("changes_in_topk.csv", index=False)
 
     sota = baseline_engine.finalize()
 
