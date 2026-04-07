@@ -4,6 +4,7 @@ from src.summary import process_snapshots, analyze_graph_properties, process_sum
 import src.core.sankofa  as walks
 import sys
 from pathlib import Path
+import json
 run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
 
@@ -11,7 +12,7 @@ run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
 def main_():
     dynagraph = {} 
-    subgraph_dir ="data/imdb"
+    subgraph_dir ="data/dbp"
  
     print("Loading all subgraph snapshots...")
     graphs, training_data, test_data, queries_ = process_snapshots(subgraph_dir)
@@ -246,10 +247,125 @@ def main_():
 
 #     print("Done.")
 
+def build_changes_dataframe(changes_over_time, queries_):
+    rows = []
+
+    # Convert seeds to sets (per timestep)
+    # seeds_per_timestep = {
+    #     int(t): set(map(int, nodes))
+    #     for t, nodes in queries_.items()
+    # }
+
+    seeds_per_timestep = {
+    int(t): {int(x) for x in nodes if x is not None}
+    for t, nodes in queries_.items()
+    }
+
+    for t, changes in changes_over_time.items():
+        t = int(t)
+
+        seeds_t = seeds_per_timestep.get(t, set())
+        seeds_next = seeds_per_timestep.get(t+1, set())
+
+        seeds = seeds_t.union(seeds_next)
+        #seeds = seeds_per_timestep.get(t, set())
+
+        nodes_added = changes.get("nodes_added", [])
+        nodes_removed = changes.get("nodes_removed", [])
+        edges_added = changes.get("edges_added", [])
+        edges_removed = changes.get("edges_removed", [])
+
+        # ------------------------------
+        # Overlap computations
+        # ------------------------------
+        overlap_nodes_added = [n for n in nodes_added if n in seeds]
+        overlap_nodes_removed = [n for n in nodes_removed if n in seeds]
+
+        affected_nodes_added = set()
+        affected_nodes_removed = set()
+
+        # From edges added
+        for (u, v) in edges_added:
+            affected_nodes_added.add(u)
+            affected_nodes_added.add(v)
+
+        # From edges removed
+        for (u, v) in edges_removed:
+            affected_nodes_removed.add(u)
+            affected_nodes_removed.add(v)
+
+        # Include explicitly added/removed nodes too
+        affected_nodes_added.update(nodes_added)
+        affected_nodes_removed.update(nodes_removed)
+
+        overlap_nodes_added = [
+            n for n in affected_nodes_added if n in seeds
+        ]
+
+        overlap_nodes_removed = [
+            n for n in affected_nodes_removed if n in seeds
+        ]
+
+        overlap_edges_added = [
+            (u, v) for (u, v) in edges_added
+            if u in seeds or v in seeds
+        ]
+
+        overlap_edges_removed = [
+            (u, v) for (u, v) in edges_removed
+            if u in seeds or v in seeds
+        ]
+
+        # ------------------------------
+        # Store everything in ONE row
+        # ------------------------------
+        row = {
+            "timestep": t,
+
+            # GLOBAL
+            "nodes_added": len(nodes_added),
+            "nodes_removed": len(nodes_removed),
+            "edges_added": len(edges_added),
+            "edges_removed": len(edges_removed),
+
+            # QUERY-AWARE ⭐
+            "overlap_nodes_added": len(overlap_nodes_added),
+            "overlap_nodes_removed": len(overlap_nodes_removed),
+            "overlap_edges_added": len(overlap_edges_added),
+            "overlap_edges_removed": len(overlap_edges_removed),
+        }
+
+        # ------------------------------
+        # Optional ratios (VERY useful)
+        # ------------------------------
+        row["node_overlap_ratio_added"] = (
+            len(overlap_nodes_added) / len(nodes_added)
+            if nodes_added else 0
+        )
+
+        row["node_overlap_ratio_removed"] = (
+            len(overlap_nodes_removed) / len(nodes_removed)
+            if nodes_removed else 0
+        )
+
+        row["edge_overlap_ratio_added"] = (
+            len(overlap_edges_added) / len(edges_added)
+            if edges_added else 0
+        )
+
+        row["edge_overlap_ratio_removed"] = (
+            len(overlap_edges_removed) / len(edges_removed)
+            if edges_removed else 0
+        )
+
+        rows.append(row)
+
+    return pd.DataFrame(rows).sort_values(by="timestep")
+
 
 def main():
 
-    subgraph_dir =  "/home/ama/wiki_new/wiki_98"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
+    subgraph_dir = "/home/ama/wiki_new/wiki_50"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
 
     print("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
@@ -350,23 +466,24 @@ def main():
     changes_in_topk = results["changes_over_time"]
 
 
+    with open("queries.json", "w") as f:
+        json.dump(queries_, f, indent=4)
+    df_changes = build_changes_dataframe(changes_in_topk, queries_)
+
+    # count_changes = []
+
+    # for timestep, changes in changes_in_topk.items():
+    #     count_changes.append({
+    #         "timestep": int(timestep),
+    #         "nodes_added": len(changes.get("nodes_added", [])),
+    #         "nodes_removed": len(changes.get("nodes_removed", [])),
+    #         "edges_added": len(changes.get("edges_added", [])),
+    #         "edges_removed": len(changes.get("edges_removed", [])),
+    #     })
 
 
 
-    count_changes = []
-
-    for timestep, changes in changes_in_topk.items():
-        count_changes.append({
-            "timestep": int(timestep),
-            "nodes_added": len(changes.get("nodes_added", [])),
-            "nodes_removed": len(changes.get("nodes_removed", [])),
-            "edges_added": len(changes.get("edges_added", [])),
-            "edges_removed": len(changes.get("edges_removed", [])),
-        })
-
-
-
-    df_changes = pd.DataFrame(count_changes).sort_values(by="timestep")
+    #df_changes = pd.DataFrame(count_changes).sort_values(by="timestep")
 
     runtime_df = pd.DataFrame(
         [{"Timestep": t, "Runtime (walks)": runtime}
@@ -429,7 +546,7 @@ def main():
     # ==========================================================
     # FINAL MERGE
     # ==========================================================
-    import json
+    
     sankofa = pd.concat(sankofa_rows, ignore_index=True)
     sankofa.to_csv("sankofa_results.csv", index=False)
     with open("changes_in_topk.json", "w") as f:
