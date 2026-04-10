@@ -823,10 +823,12 @@ TopKSummaryWithWeights process_one_timestep(
 
         auto start = chrono::high_resolution_clock::now();
         RandomWalkResult R;
-        if (t == 0) {
+        if (t%20 == 0) {
     
             R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
             summary.random_walks[0] = R;
+            cumCounts.clear(); // reset cumulative counts every 5 timesteps
+            counters.clear();  // reset counters every 5 timesteps
 
 
         } else {
