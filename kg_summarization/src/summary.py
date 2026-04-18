@@ -11,9 +11,11 @@ import networkx as nx
 from src.base import DBPedia
 from src.user import query_log_by_mids
 from src.glimpse import SummaryMethod, GLIMPSE
+from src.hhop_random import HHOP_RANDOM
 from src.isummary import ISUMMARY
 from src.metrics import total_query_log_metrics, average_query_log_metrics
 from src.apex import APEX
+from src.pagerank import PPR_FREQUENCY
 import pickle
 import re
 
@@ -344,8 +346,49 @@ METHODS = {
     'glimpse': SummaryMethod(GLIMPSE, 'GLIMPSE'),
     'apex': SummaryMethod(APEX, 'APEX'),
     'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
+    'hhop_random': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM', h=2, neighborhood_mode='both'),
+    'hhop_random_outgoing': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM_OUTGOING', h=2, neighborhood_mode='outgoing_only'),
+    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=5),
 
 }
+
+
+_METHOD_LABELS = {
+    'glimpse': 'Glimpse',
+    'apex': 'Apex',
+    'isummary': 'Isummary',
+    'hhop_random': 'H-Hop Random',
+    'hhop_random_outgoing': 'H-Hop Random Outgoing',
+    'ppr_frequency': 'PPR Frequency',
+}
+
+
+def _validated_method_names(methods):
+    if methods is None:
+        return []
+
+    method_names = list(dict.fromkeys(methods))
+    unknown = [name for name in method_names if name not in METHODS]
+    if unknown:
+        raise ValueError(f"Unknown baseline methods: {', '.join(unknown)}")
+
+    return method_names
+
+
+def _baseline_label(method_name):
+    return _METHOD_LABELS.get(method_name, method_name.replace('_', ' ').title())
+
+
+def _present_col(method_label):
+    return f"{method_label} Present F1"
+
+
+def _weighted_col(method_label):
+    return f"Weighted {method_label} F1"
+
+
+def _runtime_col(method_label):
+    return f"{method_label} Runtime (seconds)"
 
 
 def flatten_list(nested_list):
@@ -354,6 +397,20 @@ def flatten_list(nested_list):
             yield from flatten_list(item)
         else:
             yield item
+
+
+def _merged_training_logs(training_data, timestep, window_size=2):
+    if timestep not in training_data:
+        return []
+
+    if timestep == 0:
+        return training_data[timestep]
+
+    keys = sorted(training_data.keys())
+    idx = keys.index(timestep)
+    start = max(0, idx - window_size + 1)
+    selected = keys[start: idx + 1]
+    return list(flatten_list([training_data[k] for k in selected]))
 
 
 def sliding_window(window_size=2, training_set=None, summary=None, i=None, test_weights=None):
@@ -406,6 +463,32 @@ def _normalize_weights(w):
     if tot == 0:
         return {k: 0.0 for k in w}
     return {k: v / tot for k, v in w.items()}
+
+
+def _evaluate_stateless_baseline(summary_method, method_name, KG, t, K, training_data, test_data, weights):
+    method_label = _baseline_label(method_name)
+    norm_w = _normalize_weights(weights)
+    merged_logs = _merged_training_logs(training_data, t)
+
+    t0 = time.time()
+    summary = summary_method(KG, K, merged_logs)
+    run_time = time.time() - t0
+
+    total_F1, _, _ = total_query_log_metrics(summary, test_data[t])
+    present_row = {
+        "Timestep": t,
+        _present_col(method_label): total_F1,
+        "Runtime (seconds)": run_time,
+    }
+
+    df_w = process_all_timesteps(
+        training_set=test_data,
+        summary=summary,
+        i=t,
+        test_weights=norm_w,
+    )
+
+    return present_row, df_w
 
 
 def _safe_concat_df(list_of_dfs, rename_from="Timestep Window", rename_to="Timestep", value_name="Total F1"):
@@ -545,44 +628,39 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
 
 # --------------------- process_summary_glimpse  ---------------------
 # 
-def run_glimpse(summary_method, graphs, triples_no_mc, training_data, test_data, weights):
-    glimpse_rows = []
+def run_stateless_baseline(summary_method, method_name, graphs, triples_no_mc, training_data, test_data, weights):
+    rows = []
     weighted_tests = []
 
     for t in sorted(graphs.keys() & triples_no_mc.keys() & weights.keys()):
         KG = graphs[t]
         K = triples_no_mc[t]
-        norm_w = _normalize_weights(weights[t])
 
-        # build merged logs (window N=2 as original)
-        if t == 0:
-            merged_logs = training_data[t]
-        else:
-            N = 2
-            keys = sorted(training_data.keys())
-            idx = keys.index(t)
-            start = max(0, idx - N + 1)
-            selected = keys[start: idx + 1]
-            merged_logs = list(flatten_list([training_data[k] for k in selected]))
-
-        t0 = time.time()
-        S = summary_method(KG, K, merged_logs)
-        run_time = time.time() - t0
-
-        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
-        glimpse_rows.append({"Timestep": t, "Glimpse Present F1": total_F1, "Runtime (seconds)": run_time})
-
-        df_w = process_all_timesteps(training_set=test_data, summary=S, i=t, test_weights=norm_w)
+        present_row, df_w = _evaluate_stateless_baseline(
+            summary_method,
+            method_name,
+            KG,
+            t,
+            K,
+            training_data,
+            test_data,
+            weights[t],
+        )
+        rows.append(present_row)
         weighted_tests.append(df_w)
 
+    return rows, weighted_tests
 
-    return glimpse_rows, weighted_tests
+
+def run_glimpse(summary_method, graphs, triples_no_mc, training_data, test_data, weights):
+    return run_stateless_baseline(summary_method, "glimpse", graphs, triples_no_mc, training_data, test_data, weights)
 
 
 # --------------------- process_summary_APEX  ---------------------
-def run_apex(graphs, triples_no_mc, training_data, test_data, weights):
+def run_apex(graphs, triples_no_mc, training_data, test_data, weights, method_name="apex"):
     apex_rows = []
     weighted_tests = []
+    method_label = _baseline_label(method_name)
 
     H = q = e = r = csr = index_list = None
 
@@ -606,7 +684,7 @@ def run_apex(graphs, triples_no_mc, training_data, test_data, weights):
                 P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
         #total_F1, run_time, P = APEX_(KG, K,  training_data[t], test_data[t], t=t)
 
-        apex_rows.append({"Timestep": t, "Apex Present F1": total_F1, "Runtime (seconds)": run_time})
+        apex_rows.append({"Timestep": t, _present_col(method_label): total_F1, "Runtime (seconds)": run_time})
         df_w = process_all_timesteps(training_set=test_data, summary=P, i=t, test_weights=_normalize_weights(test_w))
         weighted_tests.append(df_w)
 
@@ -617,38 +695,7 @@ def run_apex(graphs, triples_no_mc, training_data, test_data, weights):
 
 # --------------------- process_summary_ISUMMARY  ---------------------
 def run_isummary(summary_method, graphs, triples_no_mc, training_data, test_data, weights):
-    isummary_rows = []
-    weighted_tests = []
-
-    for t in sorted(graphs.keys() & triples_no_mc.keys() & weights.keys()):
-        KG = graphs[t]
-        K = triples_no_mc[t]
-        norm_w = _normalize_weights(weights[t])
-
-        if t == 0:
-            t0 = time.time()
-            S = ISUMMARY(KG, K, training_data[t])
-            run_time = time.time() - t0
-        else:
-            N = 2
-            keys = sorted(training_data.keys())
-            idx = keys.index(t)
-            start = max(0, idx - N + 1)
-            selected = keys[start: idx + 1]
-            merged_logs = list(flatten_list([training_data[k] for k in selected]))
-
-            t0 = time.time()
-            S = summary_method(KG, K, merged_logs)
-            run_time = time.time() - t0
-
-        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
-        isummary_rows.append({"Timestep": t, "Isummary Present F1": total_F1, "Runtime (seconds)": run_time})
-
-        df_w = process_all_timesteps(training_set=test_data, summary=S, i=t, test_weights=norm_w)
-        weighted_tests.append(df_w)
-
-
-    return isummary_rows, weighted_tests
+    return run_stateless_baseline(summary_method, "isummary", graphs, triples_no_mc, training_data, test_data, weights)
 
 
 # Merge present and weighted results for each method
@@ -674,64 +721,75 @@ def _merge_present_and_weighted(present_rows, weighted_dfs, present_col_name, we
 
 def process_summary_baselines(graphs, triples_no_mc, training_data, test_data, methods, weights):
     """
-    Orchestrates GLIMPSE / APEX / ISUMMARY runs and merges results.
+    Orchestrates baseline runs and merges results.
     Returns: DataFrame (sota) with columns for each method.
     """
 
-    summary_methods = [METHODS[name] for name in methods]
-
+    method_names = _validated_method_names(methods)
+    if not method_names:
+        return pd.DataFrame()
 
     raw_results = {
-        "Glimpse": ([], []),
-        "Apex": ([], []),
-        "Isummary": ([], []),
+        method_name: {"present": [], "weighted": []}
+        for method_name in method_names
     }
 
-    # --- RUN METHODS ---
-    for summary_method in summary_methods:
-        name = summary_method.name_
+    for method_name in method_names:
+        summary_method = METHODS[method_name]
+        method_label = _baseline_label(method_name)
 
-        if name.startswith("GLIMPSE") and not name.startswith("APEX"):
-            print("Summarizing for GLIMPSE")
-            rows, weighted = run_glimpse(summary_method, graphs, triples_no_mc, training_data, test_data, weights)
-            raw_results["Glimpse"][0].extend(rows)
-            raw_results["Glimpse"][1].extend(weighted)
+        print(f"Summarizing for {method_label}")
 
-        elif name == "APEX":
-            print("Summarizing for APEX")
-            rows, weighted = run_apex(graphs, triples_no_mc, training_data, test_data, weights)
-            raw_results["Apex"][0].extend(rows)
-            raw_results["Apex"][1].extend(weighted)
+        if method_name == "apex":
+            rows, weighted = run_apex(
+                graphs,
+                triples_no_mc,
+                training_data,
+                test_data,
+                weights,
+                method_name=method_name,
+            )
+        else:
+            rows, weighted = run_stateless_baseline(
+                summary_method,
+                method_name,
+                graphs,
+                triples_no_mc,
+                training_data,
+                test_data,
+                weights,
+            )
 
-        elif name == "ISUMMARY":
-            print("Summarizing for ISUMMARY")
-            rows, weighted = run_isummary(summary_method, graphs, triples_no_mc, training_data, test_data, weights)
-            raw_results["Isummary"][0].extend(rows)
-            raw_results["Isummary"][1].extend(weighted)
+        raw_results[method_name]["present"].extend(rows)
+        raw_results[method_name]["weighted"].extend(weighted)
 
  
     merged_results = {}
-    for method, (present, weighted) in raw_results.items():
+    for method_name, result in raw_results.items():
+        present = result["present"]
+        weighted = result["weighted"]
         if not present:   
             continue
+
+        method_label = _baseline_label(method_name)
 
         merged = _merge_present_and_weighted(
             present,
             weighted,
-            f"{method} Present F1",
-            f"Weighted {method} F1"
+            _present_col(method_label),
+            _weighted_col(method_label)
         )
 
         if merged is None or merged.empty:
             continue
 
 
-        merged.rename(columns={"Runtime (seconds)": f"{method} Runtime (seconds)"}, inplace=True)
+        merged.rename(columns={"Runtime (seconds)": _runtime_col(method_label)}, inplace=True)
 
-        print(f"{method.upper()}\n", merged)
-        merged.to_csv(f"{method.lower()}_results.csv", index=False)
+        print(f"{method_label}\n", merged)
+        merged.to_csv(f"{method_name}_results.csv", index=False)
 
-        merged_results[method] = merged
+        merged_results[method_name] = merged
 
     # --- FINAL MERGE ---
     dfs = list(merged_results.values())
@@ -1118,7 +1176,7 @@ def process_summary_sankofa_streaming(
 class BaselineEngine:
 
     def __init__(self, methods):
-        self.methods = methods
+        self.methods = _validated_method_names(methods)
         self.apex_state = {
             "H": None,
             "q": None,
@@ -1128,70 +1186,41 @@ class BaselineEngine:
             "index_list": None
         }
 
-        self.present_rows = {
-            "Glimpse": [],
-            "Apex": [],
-            "Isummary": []
-        }
+        self.present_rows = {method_name: [] for method_name in self.methods}
 
-        self.weighted_rows = {
-            "Glimpse": [],
-            "Apex": [],
-            "Isummary": []
-        }
+        self.weighted_rows = {method_name: [] for method_name in self.methods}
 
     def process_timestep(self, KG, t, K, training_data, test_data, weights):
 
-        for name in self.methods:
+        for method_name in self.methods:
+            if method_name == "apex":
+                self._run_apex(method_name, KG, t, K, training_data, test_data, weights)
+            else:
+                self._run_stateless_baseline(method_name, KG, t, K, training_data, test_data, weights)
 
-            if name == "glimpse":
-                self._run_glimpse(KG, t, K, training_data, test_data, weights)
 
-            elif name == "apex":
-                self._run_apex(KG, t, K, training_data, test_data, weights)
+    def _run_stateless_baseline(self, method_name, KG, t, K, training_data, test_data, weights):
+        present_row, df_w = _evaluate_stateless_baseline(
+            METHODS[method_name],
+            method_name,
+            KG,
+            t,
+            K,
+            training_data,
+            test_data,
+            weights,
+        )
 
-            elif name == "isummary":
-                self._run_isummary(KG, t, K, training_data, test_data, weights)
-
+        self.present_rows[method_name].append(present_row)
+        self.weighted_rows[method_name].append(df_w)
 
 
     def _run_glimpse(self, KG, t, K, training_data, test_data, weights):
-
-        norm_w = _normalize_weights(weights)
-
-        if t == 0:
-            merged_logs = training_data[t]
-        else:
-            N = 2
-            keys = sorted(training_data.keys())
-            idx = keys.index(t)
-            start = max(0, idx - N + 1)
-            selected = keys[start: idx + 1]
-            merged_logs = list(flatten_list([training_data[k] for k in selected]))
-
-        t0 = time.time()
-        S = METHODS["glimpse"](KG, K, merged_logs)
-        run_time = time.time() - t0
-
-        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
-
-        self.present_rows["Glimpse"].append({
-            "Timestep": t,
-            "Glimpse Present F1": total_F1,
-            "Glimpse Runtime (seconds)": run_time
-        })
-
-        df_w = process_all_timesteps(
-            training_set=test_data,
-            summary=S,
-            i=t,
-            test_weights=norm_w
-        )
-
-        self.weighted_rows["Glimpse"].append(df_w)
+        self._run_stateless_baseline("glimpse", KG, t, K, training_data, test_data, weights)
 
 
-    def _run_apex(self, KG, t, K, training_data, test_data, weights):
+    def _run_apex(self, method_name, KG, t, K, training_data, test_data, weights):
+        method_label = _baseline_label(method_name)
 
         test_w = weights
 
@@ -1225,10 +1254,10 @@ class BaselineEngine:
             "index_list": index_list
         })
 
-        self.present_rows["Apex"].append({
+        self.present_rows[method_name].append({
             "Timestep": t,
-            "Apex Present F1": total_F1,
-            "Apex Runtime (seconds)": run_time
+            _present_col(method_label): total_F1,
+            "Runtime (seconds)": run_time
         })
 
         df_w = process_all_timesteps(
@@ -1238,64 +1267,35 @@ class BaselineEngine:
             test_weights=_normalize_weights(test_w)
         )
 
-        self.weighted_rows["Apex"].append(df_w)
+        self.weighted_rows[method_name].append(df_w)
 
 
     def _run_isummary(self, KG, t, K, training_data, test_data, weights):
-
-        norm_w = _normalize_weights(weights)
-
-        if t == 0:
-            t0 = time.time()
-            S = METHODS["isummary"](KG, K, training_data[t])
-            run_time = time.time() - t0
-        else:
-            N = 2
-            keys = sorted(training_data.keys())
-            idx = keys.index(t)
-            start = max(0, idx - N + 1)
-            selected = keys[start: idx + 1]
-            merged_logs = list(flatten_list([training_data[k] for k in selected]))
-
-            t0 = time.time()
-            S = METHODS["isummary"](KG, K, merged_logs)
-            run_time = time.time() - t0
-
-        total_F1, _, _ = total_query_log_metrics(S, test_data[t])
-
-        self.present_rows["Isummary"].append({
-            "Timestep": t,
-            "Isummary Present F1": total_F1,
-            "Isummary Runtime (seconds)": run_time
-        })
-
-        df_w = process_all_timesteps(
-            training_set=test_data,
-            summary=S,
-            i=t,
-            test_weights=norm_w
-        )
-
-        self.weighted_rows["Isummary"].append(df_w)
+        self._run_stateless_baseline("isummary", KG, t, K, training_data, test_data, weights)
 
     def finalize(self):
 
         merged_results = []
 
-        for method in self.present_rows.keys():
+        for method_name in self.methods:
 
-            present = self.present_rows[method]
-            weighted = self.weighted_rows[method]
+            present = self.present_rows.get(method_name, [])
+            weighted = self.weighted_rows.get(method_name, [])
 
             if not present:
                 continue
 
+            method_label = _baseline_label(method_name)
+
             merged = _merge_present_and_weighted(
                 present,
                 weighted,
-                f"{method} Present F1",
-                f"Weighted {method} F1"
+                _present_col(method_label),
+                _weighted_col(method_label)
             )
+
+            if "Runtime (seconds)" in merged.columns:
+                merged = merged.rename(columns={"Runtime (seconds)": _runtime_col(method_label)})
 
             merged_results.append(merged)
 

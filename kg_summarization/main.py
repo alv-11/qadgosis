@@ -110,7 +110,7 @@ def main_():
 
     # sota = process_summary_baselines(
     #     graphs, triples_no, training_data, test_data,
-    #     methods=["glimpse", "apex", "isummary"]
+    #     methods=["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
     #     , weights=weights
     # )
     # merged_df = pd.merge(sankofa, sota, on="Timestep")
@@ -500,7 +500,7 @@ def main():
     triples_no = {}
 
     baseline_engine = BaselineEngine(
-        methods=[]#["glimpse"]#, "apex", "isummary"]
+        methods=[]  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
     )
 
     for t, file_name in enumerate(snapshot_files):

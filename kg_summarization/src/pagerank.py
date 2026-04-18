@@ -53,27 +53,31 @@ class Summary(KnowledgeGraph):
 
 
 
-def PR(KG, K, query_log, query_num_per_test=1, power = 1):
-        x = query_vector(KG, query_log)
-        M = KG.transition_matrix()
-        x = random_walk_with_restart(M, x, power=power)
-        sorted_x = np.sort(x)[::-1]
-        sorted_args = np.argsort(x)[::-1]
+def PR(KG, K, query_log, query_num_per_test=1, power=1, seed_mode="topic_only"):
+    x = query_vector(KG, query_log, seed_mode=seed_mode)
+    if not np.any(x):
+        return Summary(KG)
 
-        topic_mids = []
-        # turn eid into mid
-        for i in range(len(sorted_args)):
-            topic_mids.append(KG.id_entity_[sorted_args[i]])
+    M = KG.transition_matrix()
+    x = random_walk_with_restart(M, x, power=power)
+    sorted_args = np.argsort(x)[::-1]
 
-        P = Summary(KG)
-        i = 0
+    topic_mids = []
+    for i in range(len(sorted_args)):
+        topic_mids.append(KG.id_entity_[sorted_args[i]])
 
-        for i in range(len(topic_mids)):
-            P.add_entity(topic_mids[i])
-            if P.number_of_triples() > K:
-                break
-            
-        return P
+    P = Summary(KG)
+
+    for i in range(len(topic_mids)):
+        P.add_entity(topic_mids[i])
+        if P.number_of_triples() > K:
+            break
+
+    return P
+
+
+def PPR_FREQUENCY(KG, K, query_log, n=5, seed_mode="answers_fallback_topic"):
+    return PR(KG, K, query_log, power=n, seed_mode=seed_mode)
             
 
 
