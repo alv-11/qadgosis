@@ -14,7 +14,7 @@ import pandas as pd
 import sys
 
 # ---------- CONFIG ----------
-NUM_RUNS = 1
+NUM_RUNS = 5
 PARENT_DIR = Path("multi_runs")
 ORIGINAL_SCRIPT = "main.py"   
 PYTHON_BIN = sys.executable        

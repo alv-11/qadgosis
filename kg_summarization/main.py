@@ -7,6 +7,12 @@ from pathlib import Path
 import json
 run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 
+MIN_SUMMARY_SIZE = 4
+
+
+def compute_summary_size(edge_count, budget_ratio, floor=MIN_SUMMARY_SIZE):
+    return max(floor, int(edge_count * budget_ratio))
+
 
 
 
@@ -27,7 +33,7 @@ def main_():
     for i, (timestep, graph) in enumerate(dynagraph.items()):
         if i == 0:
             b = 0.01
-            summary_size = int(len(graph.edges) * b) 
+            summary_size = compute_summary_size(len(graph.edges), b)
             k1 = (len(graph.nodes))**2 / len(graph.edges)
             K = int(k1 / (0.1/b)) 
             print(f"Summary triple size: {summary_size}")
@@ -399,7 +405,7 @@ def main():
 
         if t == 0:
             b = 0.005
-            summary_size = int(len(G.edges) * b)
+            summary_size = compute_summary_size(len(G.edges), b)
             k1 = (len(G.nodes))**2 / len(G.edges)
             K = int(k1 / (0.1 / b))
 
@@ -500,7 +506,7 @@ def main():
     triples_no = {}
 
     baseline_engine = BaselineEngine(
-        methods=[]  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
+        methods=["hhop_random", "hhop_random_outgoing", "ppr_frequency"]  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
     )
 
     for t, file_name in enumerate(snapshot_files):
