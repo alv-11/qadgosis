@@ -1,7 +1,7 @@
 
 import pandas as pd
-from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, load_single_snapshot, process_summary_sankofa_streaming, BaselineEngine
-from src.sankofa_delta import ensure_sankofa_delta_cache, graph_edge_count, graph_node_count, load_delta, load_initial_graph
+from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, process_summary_sankofa_streaming, BaselineEngine
+from src.sankofa_delta import ensure_sankofa_delta_cache, graph_edge_count, graph_node_count, load_cached_snapshot_kg, load_delta, load_initial_graph
 import src.core.sankofa  as walks
 import sys
 from pathlib import Path
@@ -495,13 +495,12 @@ def main():
 
     for t, file_name in enumerate(snapshot_files):
 
-        print(f"Evaluating {file_name}")
-
-        KG = load_single_snapshot(subgraph_dir, file_name)
-
         if t not in top_k_cumsum_walks:
-            del KG
             continue
+
+        print(f"Evaluating {file_name} using cached snapshot graph")
+
+        KG = load_cached_snapshot_kg(cache, t)
 
         # ------------------- SANKOFA -------------------
         triples_no_t, sankofa_df = process_summary_sankofa_streaming(
@@ -513,7 +512,8 @@ def main():
             global_pr_dict={t: non_topk_global_pr[t]},
             test_data={t: test_data[t]},
             walks_runtime=runtime_df[runtime_df["Timestep"] == t],
-            max_triples=summary_size
+            max_triples=summary_size,
+            graphs_by_timestep={t: KG}
         )
 
 

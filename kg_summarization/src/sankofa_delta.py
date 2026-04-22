@@ -8,19 +8,23 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.base import KnowledgeGraph
 from src.path import ENCODING
 
 
 EDGE_WEIGHT = 0.01
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 CACHE_DIR_NAME = ".sankofa_cache"
 MANIFEST_FILE = "manifest.json"
 INITIAL_GRAPH_FILE = "initial_graph.pkl"
 DELTAS_DIR_NAME = "deltas"
+SNAPSHOT_TRIPLES_DIR_NAME = "snapshot_triples"
 PROJECT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 Graph = dict[int, dict[int, float]]
 GraphDelta = dict[str, object]
+SnapshotTriple = tuple[str, str, str]
+SnapshotTriples = list[SnapshotTriple]
 GENERATED_CACHE_STATUS = "generated"
 REUSED_CACHE_STATUS = "reused"
 
@@ -43,6 +47,13 @@ class SankofaDeltaCache:
 
     def delta_path(self, timestep: int) -> Path:
         return self.deltas_dir / _delta_filename(timestep)
+
+    @property
+    def snapshot_triples_dir(self) -> Path:
+        return self.cache_dir / SNAPSHOT_TRIPLES_DIR_NAME
+
+    def snapshot_triples_path(self, timestep: int) -> Path:
+        return self.snapshot_triples_dir / _snapshot_triples_filename(timestep)
 
 
 def extract_snapshot_number(filename: str) -> int:
@@ -70,29 +81,20 @@ def graph_edge_count(graph: Graph) -> int:
 
 
 def parse_snapshot_graph(snapshot_path: str | Path) -> Graph:
-    graph: Graph = {}
+    return _graph_from_snapshot_triples(parse_snapshot_triples(snapshot_path), snapshot_path)
+
+
+def parse_snapshot_triples(snapshot_path: str | Path) -> SnapshotTriples:
+    triples: SnapshotTriples = []
 
     with gzip.open(snapshot_path, "rt", encoding=ENCODING) as handle:
-        for line_number, line in enumerate(handle, start=1):
-            fact = _parse_snapshot_line(line)
-            if fact is None:
+        for line in handle:
+            triple = _parse_snapshot_triple(line)
+            if triple is None:
                 continue
+            triples.append(triple)
 
-            source_str, target_str = fact
-
-            try:
-                source = int(source_str)
-                target = int(target_str)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Snapshot {snapshot_path} contains a non-integer entity at line {line_number}: {line.strip()}"
-                ) from exc
-
-            graph.setdefault(source, {})
-            graph.setdefault(target, {})
-            graph[source][target] = EDGE_WEIGHT
-
-    return graph
+    return triples
 
 
 def ensure_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = False, verbose: bool = True) -> SankofaDeltaCache:
@@ -108,11 +110,14 @@ def ensure_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fals
     if needs_rebuild:
         if verbose:
             reason = "rebuild requested" if rebuild else "cache missing or out of date"
-            print(f"Sankofa cache: generating new cache at {cache_dir} ({reason}).")
+            print(
+                f"Sankofa cache: generating new cache at {cache_dir} "
+                f"({reason}; walk deltas + evaluation snapshots)."
+            )
         return _build_sankofa_delta_cache(subgraph_path, snapshot_files)
 
     if verbose:
-        print(f"Sankofa cache: using preexisting cache at {cache_dir}.")
+        print(f"Sankofa cache: using preexisting cache at {cache_dir} (walk deltas + evaluation snapshots).")
 
     return SankofaDeltaCache(
         subgraph_dir=subgraph_path,
@@ -131,6 +136,22 @@ def load_initial_graph(cache: SankofaDeltaCache) -> Graph:
 def load_delta(cache: SankofaDeltaCache, timestep: int) -> GraphDelta:
     with cache.delta_path(timestep).open("rb") as handle:
         return pickle.load(handle)
+
+
+def load_snapshot_triples(cache: SankofaDeltaCache, timestep: int) -> SnapshotTriples:
+    with cache.snapshot_triples_path(timestep).open("rb") as handle:
+        return pickle.load(handle)
+
+
+def build_knowledge_graph(snapshot_triples: SnapshotTriples) -> KnowledgeGraph:
+    graph = KnowledgeGraph()
+    for triple in snapshot_triples:
+        graph.add_triple(triple)
+    return graph
+
+
+def load_cached_snapshot_kg(cache: SankofaDeltaCache, timestep: int) -> KnowledgeGraph:
+    return build_knowledge_graph(load_snapshot_triples(cache, timestep))
 
 
 def apply_delta_to_graph(current_graph: Graph, delta: GraphDelta) -> Graph:
@@ -201,17 +222,23 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
 def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) -> SankofaDeltaCache:
     cache_dir = resolve_cache_dir(subgraph_dir)
     deltas_dir = cache_dir / DELTAS_DIR_NAME
+    snapshot_triples_dir = cache_dir / SNAPSHOT_TRIPLES_DIR_NAME
 
     if cache_dir.exists():
         shutil.rmtree(cache_dir)
 
     deltas_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_triples_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_paths = [subgraph_dir / file_name for file_name in snapshot_files]
-    current_graph = parse_snapshot_graph(snapshot_paths[0])
+    current_triples = parse_snapshot_triples(snapshot_paths[0])
+    current_graph = _graph_from_snapshot_triples(current_triples, snapshot_paths[0])
 
     with (cache_dir / INITIAL_GRAPH_FILE).open("wb") as handle:
         pickle.dump(current_graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    with (snapshot_triples_dir / _snapshot_triples_filename(0)).open("wb") as handle:
+        pickle.dump(current_triples, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     manifest: dict[str, object] = {
         "version": CACHE_VERSION,
@@ -219,17 +246,23 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         "snapshot_files": [_snapshot_metadata(path) for path in snapshot_paths],
         "initial_graph": INITIAL_GRAPH_FILE,
         "deltas_dir": DELTAS_DIR_NAME,
+        "snapshot_triples_dir": SNAPSHOT_TRIPLES_DIR_NAME,
         "delta_count": max(0, len(snapshot_paths) - 1),
+        "snapshot_triples_count": len(snapshot_paths),
         "initial_node_count": graph_node_count(current_graph),
         "initial_edge_count": graph_edge_count(current_graph),
     }
 
     for timestep in range(len(snapshot_paths) - 1):
-        next_graph = parse_snapshot_graph(snapshot_paths[timestep + 1])
+        next_triples = parse_snapshot_triples(snapshot_paths[timestep + 1])
+        next_graph = _graph_from_snapshot_triples(next_triples, snapshot_paths[timestep + 1])
         delta = _compute_graph_delta(current_graph, next_graph)
 
         with (deltas_dir / _delta_filename(timestep)).open("wb") as handle:
             pickle.dump(delta, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        with (snapshot_triples_dir / _snapshot_triples_filename(timestep + 1)).open("wb") as handle:
+            pickle.dump(next_triples, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
         current_graph = next_graph
 
@@ -263,12 +296,22 @@ def _cache_is_valid(
     if manifest.get("delta_count") != max(0, len(snapshot_files) - 1):
         return False
 
+    if manifest.get("snapshot_triples_count") != len(snapshot_files):
+        return False
+
+    if manifest.get("snapshot_triples_dir") != SNAPSHOT_TRIPLES_DIR_NAME:
+        return False
+
     manifest_snapshots = manifest.get("snapshot_files")
     if not isinstance(manifest_snapshots, list) or len(manifest_snapshots) != len(snapshot_files):
         return False
 
     for timestep in range(max(0, len(snapshot_files) - 1)):
         if not (cache_dir / DELTAS_DIR_NAME / _delta_filename(timestep)).exists():
+            return False
+
+    for timestep in range(len(snapshot_files)):
+        if not (cache_dir / SNAPSHOT_TRIPLES_DIR_NAME / _snapshot_triples_filename(timestep)).exists():
             return False
 
     current_metadata = [_snapshot_metadata(subgraph_dir / file_name) for file_name in snapshot_files]
@@ -286,6 +329,10 @@ def _load_manifest(cache_dir: Path) -> dict[str, object] | None:
 
 def _delta_filename(timestep: int) -> str:
     return f"delta_{timestep:04d}.pkl"
+
+
+def _snapshot_triples_filename(timestep: int) -> str:
+    return f"snapshot_{timestep:04d}.pkl"
 
 
 def _compute_graph_delta(current_graph: Graph, next_graph: Graph) -> GraphDelta:
@@ -315,6 +362,15 @@ def _compute_graph_delta(current_graph: Graph, next_graph: Graph) -> GraphDelta:
 
 
 def _parse_snapshot_line(line: str) -> tuple[str, str] | None:
+    triple = _parse_snapshot_triple(line)
+    if triple is None:
+        return None
+
+    source, _relation, target = triple
+    return source, target
+
+
+def _parse_snapshot_triple(line: str) -> SnapshotTriple | None:
     stripped = line.rstrip("\n")
     if len(stripped) < 3:
         return None
@@ -333,13 +389,32 @@ def _parse_snapshot_line(line: str) -> tuple[str, str] | None:
     if len(fact) < 3:
         return None
 
-    source, _relation = fact[:2]
+    source, relation = fact[:2]
     target = " ".join(fact[2:])
 
     if not source or not target:
         return None
 
-    return source, target
+    return source, relation, target
+
+
+def _graph_from_snapshot_triples(snapshot_triples: SnapshotTriples, snapshot_path: str | Path) -> Graph:
+    graph: Graph = {}
+
+    for line_number, (source_str, _relation, target_str) in enumerate(snapshot_triples, start=1):
+        try:
+            source = int(source_str)
+            target = int(target_str)
+        except ValueError as exc:
+            raise ValueError(
+                f"Snapshot {snapshot_path} contains a non-integer entity near parsed triple {line_number}: {(source_str, target_str)}"
+            ) from exc
+
+        graph.setdefault(source, {})
+        graph.setdefault(target, {})
+        graph[source][target] = EDGE_WEIGHT
+
+    return graph
 
 
 def _snapshot_metadata(snapshot_path: Path) -> dict[str, int | str]:

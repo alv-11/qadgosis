@@ -1053,7 +1053,8 @@ def process_summary_sankofa_streaming(
     global_pr_dict,
     test_data,
     walks_runtime=None,
-    max_triples=None
+    max_triples=None,
+    graphs_by_timestep=None
 ):
 
     triples_no = {}
@@ -1072,9 +1073,13 @@ def process_summary_sankofa_streaming(
 
         print(f"Evaluating timestep {key}")
 
-        # 🔥 STREAM LOAD GRAPH HERE
-        file_name = snapshot_files[key]
-        KG = load_single_snapshot(subgraph_dir, file_name)
+        KG = None
+        if graphs_by_timestep is not None:
+            KG = graphs_by_timestep.get(key)
+
+        if KG is None:
+            file_name = snapshot_files[key]
+            KG = load_single_snapshot(subgraph_dir, file_name)
 
         top_k_nodes = {str(n): v for n, v in top_k_nodes_dict[key].items()}
         non_top_k_nodes = {str(n): v for n, v in global_pr_dict[key].items()}
