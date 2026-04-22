@@ -10,6 +10,13 @@ using namespace std;
 using Graph_ = unordered_map<int, unordered_map<int, double>>;
 using DirectedGraph = unordered_map<int, vector<int>>;
 
+struct RawGraphDelta {
+    vector<int> nodes_added;
+    vector<int> nodes_removed;
+    vector<pair<int, int>> edges_added;
+    vector<pair<int, int>> edges_removed;
+};
+
 
 
 // Structure to hold the result after adding the dummy (query) node.
@@ -755,7 +762,71 @@ static std::unordered_map<int, std::unordered_map<int,double>> weights;
 static std::unordered_map<int,double> runtime_per_timestep;
 static std::unordered_map<int,double> cumCounts;
 static std::unordered_map<int, std::unordered_map<int,int>> counters;
+static Graph_ streamed_graph;
+static bool streamed_graph_initialized = false;
 //static bool first = true;
+
+
+Graph_ apply_raw_graph_delta(const Graph_& current_graph, const RawGraphDelta& delta) {
+    Graph_ next_graph = current_graph;
+    unordered_set<int> changed_nodes;
+
+    for (int node : delta.nodes_added)
+        changed_nodes.insert(node);
+    for (int node : delta.nodes_removed)
+        changed_nodes.insert(node);
+    for (const auto& edge : delta.edges_added)
+        changed_nodes.insert(edge.first);
+    for (const auto& edge : delta.edges_removed)
+        changed_nodes.insert(edge.first);
+
+    for (int node : changed_nodes) {
+        auto it = current_graph.find(node);
+        if (it != current_graph.end()) {
+            next_graph[node] = it->second;
+        } else {
+            next_graph[node] = {};
+        }
+    }
+
+    for (const auto& edge : delta.edges_removed) {
+        auto it = next_graph.find(edge.first);
+        if (it == next_graph.end())
+            continue;
+        it->second.erase(edge.second);
+    }
+
+    for (const auto& edge : delta.edges_added)
+        next_graph[edge.first][edge.second] = 0.01;
+
+    for (int node : delta.nodes_added) {
+        if (next_graph.find(node) == next_graph.end())
+            next_graph[node] = {};
+    }
+
+    for (int node : delta.nodes_removed)
+        next_graph.erase(node);
+
+    return next_graph;
+}
+
+
+void reset_stream_state() {
+    summary = TopKSummary{};
+    weights.clear();
+    runtime_per_timestep.clear();
+    cumCounts.clear();
+    counters.clear();
+    streamed_graph.clear();
+    streamed_graph_initialized = false;
+}
+
+
+void initialize_stream_graph(const Graph_& initial_graph) {
+    reset_stream_state();
+    streamed_graph = initial_graph;
+    streamed_graph_initialized = true;
+}
 
 
 TopKSummaryWithWeights process_one_timestep(
@@ -892,6 +963,118 @@ TopKSummaryWithWeights process_one_timestep(
 }
 
 
+TopKSummaryWithWeights process_one_timestep_delta(
+    int num_walks,
+    const RawGraphDelta& raw_delta,
+    std::unordered_map<int, std::unordered_map<int,int>>& queries,
+    double c,
+    double epsilon,
+    int k,
+    double decay_rate,
+    int t,
+    bool has_next,
+    int window_size
+) {
+    if (!streamed_graph_initialized) {
+        throw runtime_error("Sankofa streamed graph is not initialized.");
+    }
+
+    Graph_ next_graph = has_next ? apply_raw_graph_delta(streamed_graph, raw_delta) : streamed_graph;
+    auto result = process_one_timestep(
+        num_walks,
+        streamed_graph,
+        next_graph,
+        queries,
+        c,
+        epsilon,
+        k,
+        decay_rate,
+        t,
+        has_next,
+        window_size
+    );
+
+    if (has_next) {
+        streamed_graph = std::move(next_graph);
+    }
+
+    return result;
+}
+
+
+RawGraphDelta raw_graph_delta_from_py(const py::object& raw_delta_obj) {
+    if (raw_delta_obj.is_none()) {
+        return {};
+    }
+
+    py::dict raw_delta = raw_delta_obj.cast<py::dict>();
+    RawGraphDelta delta;
+    delta.nodes_added = raw_delta["nodes_added"].cast<vector<int>>();
+    delta.nodes_removed = raw_delta["nodes_removed"].cast<vector<int>>();
+    delta.edges_added = raw_delta["edges_added"].cast<vector<pair<int, int>>>();
+    delta.edges_removed = raw_delta["edges_removed"].cast<vector<pair<int, int>>>();
+    return delta;
+}
+
+
+py::dict result_to_python_dict(const TopKSummaryWithWeights& result) {
+    TopKSummary summary_for_python = result.summary;
+    py::dict result_dict;
+
+    py::dict runtime_dict;
+    for (const auto& entry : result.runtime_per_timestep)
+        runtime_dict[py::int_(entry.first)] = entry.second;
+    result_dict["runtime_per_timestep"] = runtime_dict;
+
+    py::dict changes_over_time;
+    for (const auto &entry : summary_for_python.changes_over_time) {
+        py::dict ch;
+
+        std::vector<int> nodes_added(entry.second.nodes_added.begin(), entry.second.nodes_added.end());
+        std::vector<int> nodes_removed(entry.second.nodes_removed.begin(), entry.second.nodes_removed.end());
+        std::vector<std::pair<int,int>> edges_added(entry.second.edges_added.begin(), entry.second.edges_added.end());
+        std::vector<std::pair<int,int>> edges_removed(entry.second.edges_removed.begin(), entry.second.edges_removed.end());
+
+        ch["nodes_added"] = nodes_added;
+        ch["nodes_removed"] = nodes_removed;
+        ch["edges_added"] = edges_added;
+        ch["edges_removed"] = edges_removed;
+
+        changes_over_time[py::int_(entry.first)] = ch;
+    }
+    result_dict["changes_over_time"] = changes_over_time;
+
+    py::dict top_k;
+    for (const auto &entry : summary_for_python.top_k_cumsum_walks) {
+        py::dict inner;
+        for (const auto &p : entry.second)
+            inner[py::int_(p.first)] = p.second;
+        top_k[py::int_(entry.first)] = inner;
+    }
+    result_dict["top_k_cumsum_walks"] = top_k;
+
+    py::dict global_pr;
+    for (const auto &entry : summary_for_python.global_pr) {
+        py::dict inner;
+        for (const auto &p : entry.second)
+            inner[py::int_(p.first)] = p.second;
+        global_pr[py::int_(entry.first)] = inner;
+    }
+    result_dict["global_pr"] = global_pr;
+
+    py::dict all_weights;
+    for (const auto& entry : result.weights) {
+        py::dict inner;
+        for (const auto& p : entry.second)
+            inner[py::int_(p.first)] = p.second;
+        all_weights[py::int_(entry.first)] = inner;
+    }
+    result_dict["all_weights"] = all_weights;
+
+    return result_dict;
+}
+
+
 // Wrap generate_top_k_summary so that it can be called from Python.
 py::dict wrap_generate_top_k_summary(int num_timesteps,
     int num_walks,
@@ -1012,70 +1195,38 @@ py::dict wrap_process_one_timestep(
             window_size
         );
 
-    TopKSummary summary = result.summary;
+    return result_to_python_dict(result);
+}
 
-    py::dict result_dict;
 
-    // runtime
-    py::dict runtime_dict;
-    for (const auto& entry : result.runtime_per_timestep)
-        runtime_dict[py::int_(entry.first)] = entry.second;
-    result_dict["runtime_per_timestep"] = runtime_dict;
 
-    // changes
-    py::dict changes_over_time;
-    for (const auto &entry : summary.changes_over_time) {
-        py::dict ch;
+py::dict wrap_process_one_timestep_delta(
+    int num_walks,
+    py::object raw_delta,
+    std::unordered_map<int, std::unordered_map<int,int>>& queries,
+    double c,
+    double epsilon,
+    int k,
+    double decay_rate,
+    int t,
+    bool has_next,
+    int window_size
+) {
+    RawGraphDelta parsed_delta = raw_graph_delta_from_py(raw_delta);
+    TopKSummaryWithWeights result = process_one_timestep_delta(
+        num_walks,
+        parsed_delta,
+        queries,
+        c,
+        epsilon,
+        k,
+        decay_rate,
+        t,
+        has_next,
+        window_size
+    );
 
-        std::vector<int> nodes_added(entry.second.nodes_added.begin(), entry.second.nodes_added.end());
-        std::vector<int> nodes_removed(entry.second.nodes_removed.begin(), entry.second.nodes_removed.end());
-        std::vector<std::pair<int,int>> edges_added(entry.second.edges_added.begin(), entry.second.edges_added.end());
-        std::vector<std::pair<int,int>> edges_removed(entry.second.edges_removed.begin(), entry.second.edges_removed.end());
-
-        ch["nodes_added"] = nodes_added;
-        ch["nodes_removed"] = nodes_removed;
-        ch["edges_added"] = edges_added;
-        ch["edges_removed"] = edges_removed;
-
-        changes_over_time[py::int_(entry.first)] = ch;
-    }
-
-    result_dict["changes_over_time"] = changes_over_time;
-
-    // top_k
-    py::dict top_k;
-    for (const auto &entry : summary.top_k_cumsum_walks) {
-        py::dict inner;
-        for (const auto &p : entry.second)
-            inner[py::int_(p.first)] = p.second;
-        top_k[py::int_(entry.first)] = inner;
-    }
-
-    result_dict["top_k_cumsum_walks"] = top_k;
-
-    // global_pr
-    py::dict global_pr;
-    for (const auto &entry : summary.global_pr) {
-        py::dict inner;
-        for (const auto &p : entry.second)
-            inner[py::int_(p.first)] = p.second;
-        global_pr[py::int_(entry.first)] = inner;
-    }
-
-    result_dict["global_pr"] = global_pr;
-
-    // weights
-    py::dict all_weights;
-    for (const auto& entry : result.weights) {
-        py::dict inner;
-        for (const auto& p : entry.second)
-            inner[py::int_(p.first)] = p.second;
-        all_weights[py::int_(entry.first)] = inner;
-    }
-
-    result_dict["all_weights"] = all_weights;
-
-    return result_dict;
+    return result_to_python_dict(result);
 }
 
 
@@ -1093,6 +1244,15 @@ py::dict wrap_process_one_timestep(
 PYBIND11_MODULE(sankofa, m) {
     m.doc() = "Python bindings for Sankofa";
 
+    m.def("reset_stream_state",
+        &reset_stream_state,
+        "Reset Sankofa streaming state.");
+
+    m.def("initialize_stream_graph",
+        &initialize_stream_graph,
+        py::arg("initial_graph"),
+        "Initialize the Sankofa streaming graph.");
+
     m.def("process_one_timestep",
           &wrap_process_one_timestep,
           py::arg("num_walks"),
@@ -1107,4 +1267,18 @@ PYBIND11_MODULE(sankofa, m) {
           py::arg("has_next"),
             py::arg("window_size") = 5
     );
+
+        m.def("process_one_timestep_delta",
+            &wrap_process_one_timestep_delta,
+            py::arg("num_walks"),
+            py::arg("raw_delta") = py::none(),
+            py::arg("queries"),
+            py::arg("c"),
+            py::arg("epsilon"),
+            py::arg("k"),
+            py::arg("decay_rate"),
+            py::arg("t"),
+            py::arg("has_next"),
+            py::arg("window_size") = 5
+        );
 }

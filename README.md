@@ -35,6 +35,44 @@ The walks component of Algorithm 2 of SANKOFA is implemented in C++ using pybind
 
     The output is stored in `multi_runs` with a corresponding folder for each run.
 
+## Sankofa Delta Cache
+
+`main.py` now avoids reparsing every full snapshot during Sankofa Phase 1.
+The first run against a dataset builds a cache under the repository data area
+and later runs reuse it.
+
+You can also prebuild the cache before running the framework:
+
+```bash
+cd kg_summarization
+python3 build_sankofa_cache.py data/test_small
+python3 build_sankofa_cache.py /path/to/snapshots --rebuild --validate
+```
+
+Both the prebuild script and normal framework execution print whether Sankofa is
+generating a new cache or using a preexisting one.
+
+Cache location:
+
+- If the dataset already lives under `kg_summarization/data/...`, the cache is stored next to it in `<subgraph_dir>/.sankofa_cache/`.
+- If the dataset lives somewhere else, the cache is stored in `kg_summarization/data/.sankofa_cache/<dataset-name>-<hash>/`.
+
+The cache contains:
+
+- `initial_graph.pkl`: the graph reconstructed from `snapshot_0.nt.gz`.
+- `deltas/delta_<timestep>.pkl`: raw node/edge additions and removals between consecutive snapshots.
+- `manifest.json`: cache metadata used to validate that the snapshots on disk still match the cached data.
+
+Cache behavior:
+
+- Snapshots on disk are still full graph states. The cache is a preprocessing layer on top of them.
+- The cache rebuilds automatically if the snapshot list, file sizes, or mtimes change.
+- Query-dependent dummy-node overlays are not cached. They are still applied at runtime inside Sankofa.
+- This optimization currently targets Sankofa Phase 1 only. The later evaluation and baseline steps still load full snapshots through the existing Python path.
+
+If you want to force a rebuild, delete the corresponding cache directory or call
+`ensure_sankofa_delta_cache(..., rebuild=True)` from Python.
+
 ## Synthetic Test Graph Workflow
 
 The repository includes a synthetic graph generator that writes deterministic

@@ -1,6 +1,7 @@
 
 import pandas as pd
 from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, load_single_snapshot, process_summary_sankofa_streaming, BaselineEngine
+from src.sankofa_delta import ensure_sankofa_delta_cache, graph_edge_count, graph_node_count, load_delta, load_initial_graph
 import src.core.sankofa  as walks
 import sys
 from pathlib import Path
@@ -371,7 +372,7 @@ def build_changes_dataframe(changes_over_time, queries_):
 
 def main():
 
-    subgraph_dir = "/home/ama/wiki_new/wiki_50"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
+    subgraph_dir = "/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
 
     print("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
@@ -379,78 +380,60 @@ def main():
 
     total_timesteps = len(snapshot_files)
 
+    cache = ensure_sankofa_delta_cache(subgraph_dir)
+    if list(cache.snapshot_files) != list(snapshot_files):
+        raise ValueError("Sankofa cache snapshot order does not match query preparation order.")
+
     converted_queries = {
         int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
         for timestep, query_list in queries_.items()
     }
 
-    previous_graph = None
+    initial_graph = load_initial_graph(cache)
     results = None
-    summary_size = None
-    K = None
+
+    initial_edge_count = graph_edge_count(initial_graph)
+    initial_node_count = graph_node_count(initial_graph)
+    if initial_edge_count == 0:
+        raise ValueError("Initial Sankofa graph has no edges.")
+
+    b = 0.005
+    summary_size = compute_summary_size(initial_edge_count, b)
+    k1 = (initial_node_count ** 2) / initial_edge_count
+    K = int(k1 / (0.1 / b))
+
+    print(f"Summary triple size: {summary_size}")
 
     print("Streaming snapshots into C++...")
+    walks.reset_stream_state()
+    walks.initialize_stream_graph(initial_graph)
 
     # ==========================================================
     # PHASE 1 — STREAM INTO C++ (INCREMENTAL SANKOFA ENGINE)
     # ==========================================================
 
-    for t, file_name in enumerate(snapshot_files):
+    for t in range(total_timesteps - 1):
+        print(f"Applying cached delta for timestep {t} -> {t + 1}")
 
-
-        print(f"Loading {file_name}")
-
-        KG = load_single_snapshot(subgraph_dir, file_name)
-        G = analyze_graph_properties(KG, t)
-
-        if t == 0:
-            b = 0.005
-            summary_size = compute_summary_size(len(G.edges), b)
-            k1 = (len(G.nodes))**2 / len(G.edges)
-            K = int(k1 / (0.1 / b))
-
-            print(f"Summary triple size: {summary_size}")
-
-        current_graph = {
-            int(node): {
-                int(neighbor): float(G[node][neighbor].get("weight", 0.0001))
-                for neighbor in G.neighbors(node)
-            }
-            for node in G.nodes
-        }
-
-        del KG
-        del G
-
-        if previous_graph is None:
-            previous_graph = current_graph
-            continue
-
-        
         print(f"Processing timestep {t} in C++...")
 
-        results = walks.process_one_timestep(
+        results = walks.process_one_timestep_delta(
             num_walks=5,
-            current_graph=previous_graph,
-            next_graph=current_graph,
+            raw_delta=load_delta(cache, t),
             queries=converted_queries,
             c=2,
             epsilon=0.25,
             k=K,
             decay_rate=0.03,
-            t=t-1,
+            t=t,
             has_next=True,
             window_size=5
         )
 
-        del previous_graph
-        previous_graph = current_graph
-
     # Final timestep
-    results = walks.process_one_timestep(
+    results = walks.process_one_timestep_delta(
         num_walks=5,
-        current_graph=previous_graph,
-        next_graph=previous_graph,
+        raw_delta=None,
         queries=converted_queries,
         c=2,
         epsilon=0.25,
