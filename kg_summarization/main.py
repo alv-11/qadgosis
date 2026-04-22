@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 import json
 run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
+query_bundle_index = int(sys.argv[2]) if len(sys.argv) > 2 else None
 
 MIN_SUMMARY_SIZE = 4
 
@@ -376,7 +377,7 @@ def main():
 
     print("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
-        prepare_queries_and_splits(subgraph_dir)
+        prepare_queries_and_splits(subgraph_dir, query_bundle_index=query_bundle_index)
 
     total_timesteps = len(snapshot_files)
 

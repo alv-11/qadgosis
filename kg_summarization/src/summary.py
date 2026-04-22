@@ -16,6 +16,7 @@ from src.isummary import ISUMMARY
 from src.metrics import total_query_log_metrics, average_query_log_metrics
 from src.apex import APEX
 from src.pagerank import PPR_FREQUENCY
+import json
 import pickle
 import re
 
@@ -1367,7 +1368,264 @@ def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4):
 
 
 
-def generate_query_logs(graph, timestep, topic_mids, num_queries=200):
+QUERY_LOGS_DIR_NAME = "query_logs"
+QUERY_LOG_BUNDLE_METADATA_FILE = "bundle_metadata.json"
+QUERY_LOG_TOPIC_COUNT = 5
+QUERY_LOG_TOPIC_CHANGE_RATIO = 0.4
+QUERY_LOG_NUM_QUERIES = 200
+QUERY_LOG_SHUFFLE = True
+QUERY_LOG_RANDOM_QUERY_PROB = 0.0
+
+
+def _query_generation_settings():
+    return {
+        "topic_strategy": "update_topics_fixed",
+        "topic_count": QUERY_LOG_TOPIC_COUNT,
+        "topic_change_ratio": QUERY_LOG_TOPIC_CHANGE_RATIO,
+        "query_strategy": "query_log_by_mids",
+        "num_queries": QUERY_LOG_NUM_QUERIES,
+        "shuffle": QUERY_LOG_SHUFFLE,
+        "random_query_prob": QUERY_LOG_RANDOM_QUERY_PROB,
+    }
+
+
+def _format_query_setting_value(value):
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, float):
+        return format(value, "g").replace("-", "m").replace(".", "p")
+    return str(value).replace("-", "m").replace(".", "p")
+
+
+def _query_bundle_prefix(settings):
+    return (
+        f"tc{settings['topic_count']}_"
+        f"cr{_format_query_setting_value(settings['topic_change_ratio'])}_"
+        f"q{settings['num_queries']}_"
+        f"s{_format_query_setting_value(settings['shuffle'])}_"
+        f"p{_format_query_setting_value(settings['random_query_prob'])}"
+    )
+
+
+def _query_bundle_name(settings, bundle_id):
+    return f"{_query_bundle_prefix(settings)}_{bundle_id:03d}"
+
+
+def _query_bundle_root(subgraph_dir):
+    return Path(subgraph_dir) / QUERY_LOGS_DIR_NAME
+
+
+def _query_log_filename(timestep):
+    return f"query_log_snapshot_{timestep}.pkl"
+
+
+def _query_log_path(bundle_dir, timestep):
+    return bundle_dir / _query_log_filename(timestep)
+
+
+def _query_bundle_metadata_path(bundle_dir):
+    return bundle_dir / QUERY_LOG_BUNDLE_METADATA_FILE
+
+
+def _snapshot_metadata(snapshot_path):
+    stat = snapshot_path.stat()
+    return {
+        "name": snapshot_path.name,
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _load_query_bundle_metadata(bundle_dir):
+    metadata_path = _query_bundle_metadata_path(bundle_dir)
+    if not metadata_path.exists():
+        return None
+
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _query_bundle_id_from_name(bundle_name, settings):
+    pattern = rf"{re.escape(_query_bundle_prefix(settings))}_(\d+)"
+    match = re.fullmatch(pattern, bundle_name)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _query_bundle_is_valid(bundle_dir, metadata, settings, snapshot_metadata):
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("generation_settings") != settings:
+        return False
+    if metadata.get("snapshot_files") != snapshot_metadata:
+        return False
+    if metadata.get("query_log_count") != len(snapshot_metadata):
+        return False
+
+    bundle_id = metadata.get("bundle_id")
+    if not isinstance(bundle_id, int):
+        return False
+
+    for timestep in range(len(snapshot_metadata)):
+        if not _query_log_path(bundle_dir, timestep).exists():
+            return False
+
+    return True
+
+
+def _find_matching_query_bundles(subgraph_dir, settings, snapshot_files):
+    bundle_root = _query_bundle_root(subgraph_dir)
+    snapshot_paths = [Path(subgraph_dir) / file_name for file_name in snapshot_files]
+    snapshot_metadata = [_snapshot_metadata(path) for path in snapshot_paths]
+    matches = []
+
+    if not bundle_root.exists():
+        return matches
+
+    for bundle_dir in bundle_root.iterdir():
+        if not bundle_dir.is_dir():
+            continue
+
+        metadata = _load_query_bundle_metadata(bundle_dir)
+        if not _query_bundle_is_valid(bundle_dir, metadata, settings, snapshot_metadata):
+            continue
+
+        matches.append(
+            {
+                "bundle_id": metadata["bundle_id"],
+                "bundle_name": bundle_dir.name,
+                "bundle_dir": bundle_dir,
+                "status": "reused",
+            }
+        )
+
+    return sorted(matches, key=lambda item: item["bundle_id"])
+
+
+def _next_query_bundle_id(subgraph_dir, settings):
+    bundle_root = _query_bundle_root(subgraph_dir)
+    max_bundle_id = 0
+
+    if not bundle_root.exists():
+        return 1
+
+    for bundle_dir in bundle_root.iterdir():
+        if not bundle_dir.is_dir():
+            continue
+        bundle_id = _query_bundle_id_from_name(bundle_dir.name, settings)
+        if bundle_id is not None:
+            max_bundle_id = max(max_bundle_id, bundle_id)
+
+    return max_bundle_id + 1
+
+
+def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
+    bundle_root = _query_bundle_root(subgraph_dir)
+    bundle_root.mkdir(parents=True, exist_ok=True)
+
+    bundle_name = _query_bundle_name(settings, bundle_id)
+    bundle_dir = bundle_root / bundle_name
+    bundle_dir.mkdir(parents=True, exist_ok=False)
+
+    prev_topics = None
+    snapshot_paths = [Path(subgraph_dir) / file_name for file_name in snapshot_files]
+
+    print(f"Query logs: generating stored bundle {bundle_name} in {bundle_dir}.")
+
+    for timestep, snapshot_path in enumerate(snapshot_paths):
+        KG = DBPedia(rdf_gz=str(snapshot_path))
+        KG.load()
+
+        current_topics = update_topics_fixed(
+            prev_topics,
+            KG,
+            K=settings["topic_count"],
+            change_ratio=settings["topic_change_ratio"],
+        )
+        prev_topics = current_topics
+
+        query_log = generate_query_logs(
+            KG,
+            timestep,
+            current_topics,
+            num_queries=settings["num_queries"],
+            shuffle=settings["shuffle"],
+            random_query_prob=settings["random_query_prob"],
+        )
+
+        with _query_log_path(bundle_dir, timestep).open("wb") as handle:
+            pickle.dump(query_log, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print(f"Timestep {timestep}: generated {len(current_topics)} topics")
+        del KG
+
+    metadata = {
+        "bundle_id": bundle_id,
+        "bundle_name": bundle_name,
+        "generation_settings": settings,
+        "snapshot_files": [_snapshot_metadata(path) for path in snapshot_paths],
+        "query_log_count": len(snapshot_paths),
+    }
+
+    with _query_bundle_metadata_path(bundle_dir).open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2)
+
+    return {
+        "bundle_id": bundle_id,
+        "bundle_name": bundle_name,
+        "bundle_dir": bundle_dir,
+        "status": "generated",
+    }
+
+
+def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
+    settings = _query_generation_settings()
+    if query_bundle_index is not None and query_bundle_index < 1:
+        raise ValueError("query_bundle_index must be >= 1")
+
+    target_index = 1 if query_bundle_index is None else query_bundle_index
+    matches = _find_matching_query_bundles(subgraph_dir, settings, snapshot_files)
+
+    while len(matches) < target_index:
+        next_bundle = _generate_query_bundle(
+            subgraph_dir,
+            snapshot_files,
+            settings,
+            _next_query_bundle_id(subgraph_dir, settings),
+        )
+        matches.append(next_bundle)
+        matches.sort(key=lambda item: item["bundle_id"])
+
+    selected = matches[target_index - 1]
+    if selected["status"] == "reused":
+        print(
+            f"Query logs: using stored bundle {selected['bundle_name']} "
+            f"from {selected['bundle_dir']}."
+        )
+
+    return selected
+
+
+def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
+    training_data, test_data, queries_ = {}, {}, {}
+
+    for timestep, _file_name in enumerate(snapshot_files):
+        with _query_log_path(bundle_dir, timestep).open("rb") as handle:
+            query_log = pickle.load(handle)
+
+        if not query_log:
+            continue
+
+        split_idx = int(0.8 * len(query_log))
+        training_data[timestep] = query_log[:split_idx]
+        test_data[timestep] = query_log[split_idx:]
+        queries_[timestep] = _build_seed_node_list(training_data[timestep])
+
+    return training_data, test_data, queries_
+
+
+def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle=True, random_query_prob=0):
     """Generate query logs using given topics."""
 
     valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
@@ -1381,14 +1639,14 @@ def generate_query_logs(graph, timestep, topic_mids, num_queries=200):
         valid_topic_mids,
         num_queries,
         topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
-        shuffle=True,
-        random_query_prob=0
+        shuffle=shuffle,
+        random_query_prob=random_query_prob
     )
 
     return query_log
 
 
-def save_or_load_query_log(query_log_file, graph, timestep, topic_mids):
+def save_or_load_query_log(query_log_file, graph, timestep, topic_mids=None):
     """Save or load query logs from a file."""
 
     # Load if exists (DO NOT regenerate)
@@ -1396,8 +1654,22 @@ def save_or_load_query_log(query_log_file, graph, timestep, topic_mids):
         with open(query_log_file, "rb") as f:
             return pickle.load(f)
 
-    # Otherwise generate using topics
-    query_log = generate_query_logs(graph, timestep, topic_mids)
+    if topic_mids is None:
+        topic_mids = update_topics_fixed(
+            prev_topics=None,
+            graph=graph,
+            K=QUERY_LOG_TOPIC_COUNT,
+            change_ratio=QUERY_LOG_TOPIC_CHANGE_RATIO,
+        )
+
+    query_log = generate_query_logs(
+        graph,
+        timestep,
+        topic_mids,
+        num_queries=QUERY_LOG_NUM_QUERIES,
+        shuffle=QUERY_LOG_SHUFFLE,
+        random_query_prob=QUERY_LOG_RANDOM_QUERY_PROB,
+    )
 
     with open(query_log_file, "wb") as f:
         pickle.dump(query_log, f)
@@ -1405,50 +1677,32 @@ def save_or_load_query_log(query_log_file, graph, timestep, topic_mids):
     return query_log
 
 
-def prepare_queries_and_splits(subgraph_dir):
+def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None):
     """
-    Generate training/test splits and query lists
-    WITHOUT storing all graphs in memory.
+    Generate training/test splits and query lists from a reusable stored query bundle.
     """
-    training_data, test_data, queries_ = {}, {}, {}
-
     files = os.listdir(subgraph_dir)
     snapshot_files = sorted(
         [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
         key=extract_snapshot_number
     )
 
-    prev_topics = None  # 🔑 track topic evolution
+    if not snapshot_files:
+        raise ValueError(f"No snapshot_*.nt.gz files found in {subgraph_dir}")
 
-    for i, file_name in enumerate(snapshot_files):
-        path = os.path.join(subgraph_dir, file_name)
+    selected_bundle = _ensure_query_bundle(
+        subgraph_dir,
+        snapshot_files,
+        query_bundle_index=query_bundle_index,
+    )
+    training_data, test_data, queries_ = _load_query_splits_from_bundle(
+        selected_bundle["bundle_dir"],
+        snapshot_files,
+    )
 
-        KG = DBPedia(rdf_gz=path)
-        KG.load()
-
-        # 🔑 Update topics (fixed size + 40% change)
-        current_topics = update_topics_fixed(prev_topics, KG, K=5, change_ratio=0.4)
-        prev_topics = current_topics
-
-        query_log_file = f"query_log_snapshot_{i}.pkl"
-
-        query_log = save_or_load_query_log(
-            query_log_file, KG, i, current_topics
-        )
-
-        print(f"Timestep {i}: {len(current_topics)} topics")
-
-        if not query_log:
-            del KG
-            continue
-
-        split_idx = int(0.8 * len(query_log))
-        training_data[i] = query_log[:split_idx]
-        test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i])
-
-        del KG  # free memory
-
-    print("Prepared query logs (streaming mode).")
+    print(
+        f"Prepared query logs from bundle {selected_bundle['bundle_name']} "
+        f"({selected_bundle['status']})."
+    )
 
     return training_data, test_data, queries_, snapshot_files

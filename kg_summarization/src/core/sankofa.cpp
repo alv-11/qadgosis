@@ -17,6 +17,128 @@ struct RawGraphDelta {
     vector<pair<int, int>> edges_removed;
 };
 
+namespace {
+
+constexpr int kDummyNodeBase = 123456789;
+constexpr double kGraphScaleFactor = 10.0;
+constexpr double kRawEdgeWeight = 0.01;
+constexpr double kScaledEdgeWeight = kRawEdgeWeight / kGraphScaleFactor;
+
+vector<int> extract_query_nodes(const unordered_map<int, int>& queries) {
+    vector<int> query_nodes;
+    query_nodes.reserve(queries.size());
+    for (const auto& entry : queries)
+        query_nodes.push_back(entry.second);
+    return query_nodes;
+}
+
+int dummy_node_for_timestep(int timestep) {
+    return kDummyNodeBase + timestep;
+}
+
+void scale_graph_in_place(Graph_& graph) {
+    for (auto& [source, neighbors] : graph) {
+        for (auto& [target, weight] : neighbors)
+            weight /= kGraphScaleFactor;
+    }
+}
+
+Graph_ scaled_graph_copy(const Graph_& graph) {
+    Graph_ scaled_graph = graph;
+    scale_graph_in_place(scaled_graph);
+    return scaled_graph;
+}
+
+DirectedGraph build_directed_graph(const Graph_& graph) {
+    DirectedGraph directed_graph;
+    for (const auto& [source, neighbors] : graph) {
+        auto& adjacency = directed_graph[source];
+        adjacency.reserve(neighbors.size());
+        for (const auto& [target, _weight] : neighbors)
+            adjacency.push_back(target);
+    }
+    return directed_graph;
+}
+
+struct WeightedTransitionLookup {
+    unordered_map<int, vector<int>> neighbors;
+    unordered_map<int, vector<double>> weights;
+};
+
+void refresh_weighted_transitions_for_node(
+    WeightedTransitionLookup& lookup,
+    const Graph_& graph,
+    int node
+) {
+    auto graph_it = graph.find(node);
+    if (graph_it == graph.end() || graph_it->second.empty()) {
+        lookup.neighbors.erase(node);
+        lookup.weights.erase(node);
+        return;
+    }
+
+    auto& neighbor_list = lookup.neighbors[node];
+    auto& weight_list = lookup.weights[node];
+    neighbor_list.clear();
+    weight_list.clear();
+    neighbor_list.reserve(graph_it->second.size());
+    weight_list.reserve(graph_it->second.size());
+
+    for (const auto& [target, weight] : graph_it->second) {
+        neighbor_list.push_back(target);
+        weight_list.push_back(weight);
+    }
+}
+
+WeightedTransitionLookup build_weighted_transition_lookup(const Graph_& graph) {
+    WeightedTransitionLookup lookup;
+    for (const auto& [node, _neighbors] : graph)
+        refresh_weighted_transitions_for_node(lookup, graph, node);
+    return lookup;
+}
+
+template <typename RNG>
+bool try_sample_weighted_successor(
+    const WeightedTransitionLookup& lookup,
+    int current,
+    RNG& rng,
+    int& next
+) {
+    auto neighbors_it = lookup.neighbors.find(current);
+    if (neighbors_it == lookup.neighbors.end() || neighbors_it->second.empty())
+        return false;
+
+    auto weights_it = lookup.weights.find(current);
+    if (weights_it == lookup.weights.end() || weights_it->second.size() != neighbors_it->second.size())
+        return false;
+
+    std::discrete_distribution<int> dist(weights_it->second.begin(), weights_it->second.end());
+    next = neighbors_it->second[dist(rng)];
+    return true;
+}
+
+unordered_map<int, double> build_personalization(const vector<int>& query_nodes) {
+    unordered_map<int, double> personalization;
+    double equal_weight = 1.0 / query_nodes.size();
+    for (int node : query_nodes)
+        personalization[node] = equal_weight;
+    return personalization;
+}
+
+void add_dummy_node(Graph_& graph, const vector<int>& query_nodes, int dummy_node) {
+    double equal_weight = 1.0 / query_nodes.size();
+    auto& dummy_neighbors = graph[dummy_node];
+    dummy_neighbors.clear();
+    for (int node : query_nodes)
+        dummy_neighbors[node] = equal_weight;
+}
+
+void remove_dummy_node(Graph_& graph, int dummy_node) {
+    graph.erase(dummy_node);
+}
+
+}  // namespace
+
 
 
 // Structure to hold the result after adding the dummy (query) node.
@@ -32,34 +154,11 @@ struct PersonalizedGraphResult {
 PersonalizedGraphResult personalized_graph(const Graph_ &graph, 
                                              const unordered_map<int, int> &queries,
                                              int timestep) {
-    // Make a copy of the graph.
-    Graph_ snapshot = graph;
-    // Extract query nodes from the queries mapping.
-    vector<int> query_nodes;
-    for (const auto &p : queries) {
-        query_nodes.push_back(p.second);
-    }
-    // Define a dummy node
-    int dummy_node = 123456789 + timestep;
-    double equal_weight = 1.0 / query_nodes.size();
-    // Add an edge from the dummy node to each query node.
-    for (int node : query_nodes) {
-        snapshot[dummy_node][node] = equal_weight;
-    }
-    // Build the personalization vector.
-    unordered_map<int, double> personalization;
-    for (int node : query_nodes) {
-        personalization[node] = equal_weight;
-    }
-    // Scale the weights of all edges not coming from the dummy node.
-    for (auto &u_pair : snapshot) {
-        int u = u_pair.first;
-        if(u != dummy_node) {
-            for (auto &v_pair : u_pair.second) {
-                v_pair.second = v_pair.second / 10.0;
-            }
-        }
-    }
+    vector<int> query_nodes = extract_query_nodes(queries);
+    Graph_ snapshot = scaled_graph_copy(graph);
+    int dummy_node = dummy_node_for_timestep(timestep);
+    add_dummy_node(snapshot, query_nodes, dummy_node);
+    unordered_map<int, double> personalization = build_personalization(query_nodes);
     return {snapshot, dummy_node, personalization};
 }
 
@@ -154,6 +253,7 @@ int calculate_required_walk_length(double c, double epsilon, int k, int n) {
 
 RandomWalkResult generate_random_walks_directed_weighted(
     const Graph_& weighted_graph,
+    const WeightedTransitionLookup& weighted_transitions,
     int walks_per_node,
     int walk_length
 ) {
@@ -175,31 +275,11 @@ RandomWalkResult generate_random_walks_directed_weighted(
             walk.push_back(current);
 
             for (int j = 0; j < walk_length; j++) {
-                auto it = weighted_graph.find(current);
-                if (it == weighted_graph.end() || it->second.empty())
+                int next = 0;
+                if (!try_sample_weighted_successor(weighted_transitions, current, gen, next))
                     break;
 
-                const auto& neighbors_map = it->second;
-
-                std::vector<int> neighbors;
-                std::vector<double> weights;
-                neighbors.reserve(neighbors_map.size());
-                weights.reserve(neighbors_map.size());
-
-                for (const auto& [nbr, wgt] : neighbors_map) {
-                    neighbors.push_back(nbr);
-                    weights.push_back(wgt);
-                }
-
-                double sum_w = std::accumulate(weights.begin(), weights.end(), 0.0);
-                if (sum_w > 0) {
-                    for (double& w : weights) w /= sum_w;
-                } else {
-                    weights.assign(neighbors.size(), 1.0 / neighbors.size());
-                }
-
-                std::discrete_distribution<> dist(weights.begin(), weights.end());
-                current = neighbors[dist(gen)];
+                current = next;
                 walk.push_back(current);
             }
 
@@ -211,10 +291,25 @@ RandomWalkResult generate_random_walks_directed_weighted(
 }
 
 
+RandomWalkResult generate_random_walks_directed_weighted(
+    const Graph_& weighted_graph,
+    int walks_per_node,
+    int walk_length
+) {
+    WeightedTransitionLookup weighted_transitions = build_weighted_transition_lookup(weighted_graph);
+    return generate_random_walks_directed_weighted(
+        weighted_graph,
+        weighted_transitions,
+        walks_per_node,
+        walk_length
+    );
+}
+
+
 
 
 RandomWalkResult update_random_walks_directed_with_weights(
-    const Graph_& graph,
+    const WeightedTransitionLookup& weighted_transitions,
     std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
     const GraphChanges& changes,
     int num_walks,
@@ -225,17 +320,6 @@ RandomWalkResult update_random_walks_directed_with_weights(
     using RNG = std::mt19937;
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
     RNG rng(seed);
-
-    // Build neighbor and weight lookup tables
-    std::unordered_map<int, std::vector<int>> neighbors_dict;
-    std::unordered_map<int, std::vector<double>> weights_dict;
-
-    for (const auto& [node, neighbors] : graph) {
-        for (const auto& [nbr, weight] : neighbors) {
-            neighbors_dict[node].push_back(nbr);
-            weights_dict[node].push_back(weight);
-        }
-    }
 
     // Handle removed nodes
     for (int node : changes.nodes_removed) {
@@ -250,15 +334,12 @@ RandomWalkResult update_random_walks_directed_with_weights(
             int current = node;
 
             for (int j = 0; j < walk_length; ++j) {
-                if (neighbors_dict.find(current) != neighbors_dict.end() && !neighbors_dict[current].empty()) {
-                    auto& neighbors = neighbors_dict[current];
-                    auto& weights = weights_dict[current];
-                    std::discrete_distribution<int> dist(weights.begin(), weights.end());
-                    current = neighbors[dist(rng)];
-                    walk.push_back(current);
-                } else {
+                int next = 0;
+                if (!try_sample_weighted_successor(weighted_transitions, current, rng, next))
                     break;
-                }
+
+                current = next;
+                walk.push_back(current);
             }
 
             walks.push_back(std::move(walk));
@@ -283,15 +364,11 @@ RandomWalkResult update_random_walks_directed_with_weights(
         for (auto& walk : walks) {
             while (walk.size() < static_cast<size_t>(walk_length + 1)) {
                 int last = walk.back();
-                if (neighbors_dict.find(last) != neighbors_dict.end() && !neighbors_dict[last].empty()) {
-                    auto& neighbors = neighbors_dict[last];
-                    auto& weights = weights_dict[last];
-                    std::discrete_distribution<int> dist(weights.begin(), weights.end());
-                    int next = neighbors[dist(rng)];
-                    walk.push_back(next);
-                } else {
+                int next = 0;
+                if (!try_sample_weighted_successor(weighted_transitions, last, rng, next))
                     break;
-                }
+
+                walk.push_back(next);
             }
         }
     }
@@ -301,20 +378,21 @@ RandomWalkResult update_random_walks_directed_with_weights(
 }
 
 
-// Process the raw integer–based walks to string form.
-unordered_map<int, vector<vector<string>>> process_walk_results(const unordered_map<int, vector<vector<int>>> &precomputed_walks) {
-    unordered_map<int, vector<vector<string>>> result;
-    for (const auto &p : precomputed_walks) {
-        vector<vector<string>> walks_str;
-        for (const auto &walk : p.second) {
-            vector<string> temp;
-            for (int val : walk)
-                temp.push_back(to_string(val));
-            walks_str.push_back(temp);
-        }
-        result[p.first] = walks_str;
-    }
-    return result;
+RandomWalkResult update_random_walks_directed_with_weights(
+    const Graph_& graph,
+    std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
+    const GraphChanges& changes,
+    int num_walks,
+    int walk_length
+) {
+    WeightedTransitionLookup weighted_transitions = build_weighted_transition_lookup(graph);
+    return update_random_walks_directed_with_weights(
+        weighted_transitions,
+        precomputed_walks,
+        changes,
+        num_walks,
+        walk_length
+    );
 }
 
 // An implementation of a personalized PageRank–like random walk.
@@ -328,28 +406,47 @@ vector<int> compute_personalized_pagerank(int w, int L, double epsilon,
     random_device rd;
     mt19937 gen(rd());
     uniform_real_distribution<> dis(0.0, 1.0);
-    unordered_map<int, vector<vector<int>>> available_segments = R;
+    unordered_map<int, vector<int>> remaining_segment_indices;
 
     walk.push_back(current);
     for (int i = 1; i < L; i++) {
         if (dis(gen) < epsilon) {
             current = w;
         } else {
-            auto segments_it = available_segments.find(current);
-            if (segments_it != available_segments.end() && !segments_it->second.empty()) {
-                auto& segments = segments_it->second;
-                uniform_int_distribution<> segment_dist(0, segments.size() - 1);
-                int segment_index = segment_dist(gen);
-                vector<int> segment = std::move(segments[segment_index]);
-                segments.erase(segments.begin() + segment_index);
-
-                size_t segment_start = (!segment.empty() && segment.front() == current) ? 1 : 0;
-                for (size_t j = segment_start; j < segment.size() && walk.size() < static_cast<size_t>(L); ++j) {
-                    current = segment[j];
-                    walk.push_back(current);
+            auto segments_it = R.find(current);
+            if (segments_it != R.end() && !segments_it->second.empty()) {
+                auto remaining_it = remaining_segment_indices.find(current);
+                if (remaining_it == remaining_segment_indices.end()) {
+                    vector<int> initial_indices;
+                    initial_indices.reserve(segments_it->second.size());
+                    for (size_t index = 0; index < segments_it->second.size(); ++index)
+                        initial_indices.push_back(static_cast<int>(index));
+                    remaining_it = remaining_segment_indices.emplace(current, std::move(initial_indices)).first;
                 }
 
-                if (walk.size() < static_cast<size_t>(L)) {
+                auto& available_indices = remaining_it->second;
+                if (!available_indices.empty()) {
+                    uniform_int_distribution<> segment_dist(0, available_indices.size() - 1);
+                    size_t available_index = static_cast<size_t>(segment_dist(gen));
+                    int segment_index = available_indices[available_index];
+                    available_indices[available_index] = available_indices.back();
+                    available_indices.pop_back();
+
+                    const vector<int>& segment = segments_it->second[segment_index];
+                    size_t segment_start = (!segment.empty() && segment.front() == current) ? 1 : 0;
+                    for (size_t j = segment_start; j < segment.size() && walk.size() < static_cast<size_t>(L); ++j) {
+                        current = segment[j];
+                        walk.push_back(current);
+                    }
+
+                    if (walk.size() < static_cast<size_t>(L)) {
+                        current = w;
+                    }
+                } else if (directed_graph.find(current) != directed_graph.end() && !directed_graph.at(current).empty()) {
+                    const vector<int>& neighbors = directed_graph.at(current);
+                    uniform_int_distribution<> dis2(0, neighbors.size() - 1);
+                    current = neighbors[dis2(gen)];
+                } else {
                     current = w;
                 }
             } else if (directed_graph.find(current) != directed_graph.end() && !directed_graph.at(current).empty()) {
@@ -575,25 +672,10 @@ TopKSummaryWithWeights generate_top_k_summary(
     const int window_size = 5;
 
 
-    // Result per timestep
-    std::vector<std::unordered_map<int, double>> pagerank_per_timestep;
-    Graph_ accumulated_graph; // initially empty
-    std::unordered_set<int> accumulated_personalization_set;
-    std::unordered_map<int, std::vector<std::vector<std::string>>> accumulated_walks;
-    std::unordered_set<int> accumulated_nodes;
-    //std::vector<std::unordered_map<int, std::vector<std::vector<std::string>>>> processed_R_per_t;
-    std::unordered_map<int,double> node_walk_weight;
-    std::unordered_map<int, std::unordered_map<int,double>> pi_MC_per_t;
-    std::unordered_map<int, double> prev_pagerank;             // stores PR from last timestep
-    std::unordered_map<int, std::unordered_map<int, double>> pagerank_per_t;  // stores PR per timestep
-
-
-
     for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
         auto total_start = chrono::high_resolution_clock::now();
         auto graph_changes_result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
         summary.changes_over_time[t] = graph_changes_result.changes;
-        std::unordered_set<int> personalization_set;
 
         // Count all nodes in the snapshot
         unordered_set<int> nodes_set;
@@ -608,8 +690,8 @@ TopKSummaryWithWeights generate_top_k_summary(
 
         int walk_length = 5;
 
-        // Preprocess (we already have weighted edges)
-        Graph_ weighted_graph = graph_changes_result.snapshot;
+        // Reuse the personalized snapshot directly to avoid another full graph copy.
+        const Graph_& weighted_graph = graph_changes_result.snapshot;
 
         auto start = chrono::high_resolution_clock::now();
         RandomWalkResult R;
@@ -640,21 +722,12 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
   
-        // Process the random walk results
-        auto processed_R = process_walk_results(R.precomputed_walks);
-        //processed_R_per_t.push_back(processed_R);
-
-        for (const auto& [start_node, walks] : processed_R) {
-            auto& dest = accumulated_walks[start_node];
-            dest.insert(dest.end(), walks.begin(), walks.end());
-        }
-
         vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, R.precomputed_walks, directed_graph);
 
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
 
-        auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);
+        auto pr3 = MCWalks::MC_CompletePath_FromWalks(R.precomputed_walks);
 
         // Calculate top-k cumulative wi
         auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
@@ -757,57 +830,121 @@ GraphChangesDummyResult graph_changes_with_dummy_node_single(
 }
 
 
+GraphChanges graph_changes_with_dummy_node_streamed(
+    const RawGraphDelta& raw_delta,
+    const std::unordered_map<int, std::unordered_map<int,int>>& queries,
+    int timestep,
+    bool has_next
+) {
+    GraphChanges changes;
+
+    if (has_next) {
+        changes.nodes_added = std::unordered_set<int>(
+            raw_delta.nodes_added.begin(),
+            raw_delta.nodes_added.end()
+        );
+        changes.nodes_removed = std::unordered_set<int>(
+            raw_delta.nodes_removed.begin(),
+            raw_delta.nodes_removed.end()
+        );
+        changes.edges_added = std::set<std::pair<int, int>>(
+            raw_delta.edges_added.begin(),
+            raw_delta.edges_added.end()
+        );
+        changes.edges_removed = std::set<std::pair<int, int>>(
+            raw_delta.edges_removed.begin(),
+            raw_delta.edges_removed.end()
+        );
+
+        int current_dummy_node = dummy_node_for_timestep(timestep);
+        int next_dummy_node = dummy_node_for_timestep(timestep + 1);
+        changes.nodes_removed.insert(current_dummy_node);
+        changes.nodes_added.insert(next_dummy_node);
+
+        for (int query_node : extract_query_nodes(queries.at(timestep)))
+            changes.edges_removed.insert({current_dummy_node, query_node});
+
+        for (int query_node : extract_query_nodes(queries.at(timestep + 1)))
+            changes.edges_added.insert({next_dummy_node, query_node});
+    }
+
+    return changes;
+}
+
+
 static TopKSummary summary;
 static std::unordered_map<int, std::unordered_map<int,double>> weights;
 static std::unordered_map<int,double> runtime_per_timestep;
 static std::unordered_map<int,double> cumCounts;
 static std::unordered_map<int, std::unordered_map<int,int>> counters;
 static Graph_ streamed_graph;
+static DirectedGraph streamed_directed_graph;
+static WeightedTransitionLookup streamed_weighted_transitions;
+static int streamed_node_count = 0;
 static bool streamed_graph_initialized = false;
 //static bool first = true;
 
 
-Graph_ apply_raw_graph_delta(const Graph_& current_graph, const RawGraphDelta& delta) {
-    Graph_ next_graph = current_graph;
-    unordered_set<int> changed_nodes;
-
-    for (int node : delta.nodes_added)
-        changed_nodes.insert(node);
-    for (int node : delta.nodes_removed)
-        changed_nodes.insert(node);
-    for (const auto& edge : delta.edges_added)
-        changed_nodes.insert(edge.first);
-    for (const auto& edge : delta.edges_removed)
-        changed_nodes.insert(edge.first);
-
-    for (int node : changed_nodes) {
-        auto it = current_graph.find(node);
-        if (it != current_graph.end()) {
-            next_graph[node] = it->second;
-        } else {
-            next_graph[node] = {};
-        }
-    }
-
+void apply_raw_graph_delta(Graph_& graph, const RawGraphDelta& delta) {
     for (const auto& edge : delta.edges_removed) {
-        auto it = next_graph.find(edge.first);
-        if (it == next_graph.end())
+        auto it = graph.find(edge.first);
+        if (it == graph.end())
             continue;
         it->second.erase(edge.second);
     }
 
     for (const auto& edge : delta.edges_added)
-        next_graph[edge.first][edge.second] = 0.01;
+        graph[edge.first][edge.second] = kScaledEdgeWeight;
 
     for (int node : delta.nodes_added) {
-        if (next_graph.find(node) == next_graph.end())
-            next_graph[node] = {};
+        if (graph.find(node) == graph.end())
+            graph[node] = {};
     }
 
     for (int node : delta.nodes_removed)
-        next_graph.erase(node);
+        graph.erase(node);
+}
 
-    return next_graph;
+
+void apply_raw_graph_delta(DirectedGraph& graph, const RawGraphDelta& delta) {
+    for (const auto& edge : delta.edges_removed) {
+        auto it = graph.find(edge.first);
+        if (it == graph.end())
+            continue;
+
+        auto& neighbors = it->second;
+        neighbors.erase(remove(neighbors.begin(), neighbors.end(), edge.second), neighbors.end());
+        if (neighbors.empty())
+            graph.erase(it);
+    }
+
+    for (const auto& edge : delta.edges_added) {
+        auto& neighbors = graph[edge.first];
+        if (find(neighbors.begin(), neighbors.end(), edge.second) == neighbors.end())
+            neighbors.push_back(edge.second);
+    }
+
+    for (int node : delta.nodes_removed)
+        graph.erase(node);
+}
+
+
+void apply_raw_graph_delta(
+    WeightedTransitionLookup& lookup,
+    const Graph_& graph,
+    const RawGraphDelta& delta
+) {
+    unordered_set<int> changed_sources;
+    for (const auto& edge : delta.edges_added)
+        changed_sources.insert(edge.first);
+    for (const auto& edge : delta.edges_removed)
+        changed_sources.insert(edge.first);
+    for (int node : delta.nodes_removed) {
+        lookup.neighbors.erase(node);
+        lookup.weights.erase(node);
+    }
+    for (int node : changed_sources)
+        refresh_weighted_transitions_for_node(lookup, graph, node);
 }
 
 
@@ -818,14 +955,117 @@ void reset_stream_state() {
     cumCounts.clear();
     counters.clear();
     streamed_graph.clear();
+    streamed_directed_graph.clear();
+    streamed_weighted_transitions.neighbors.clear();
+    streamed_weighted_transitions.weights.clear();
+    streamed_node_count = 0;
     streamed_graph_initialized = false;
 }
 
 
 void initialize_stream_graph(const Graph_& initial_graph) {
     reset_stream_state();
-    streamed_graph = initial_graph;
+    streamed_graph = scaled_graph_copy(initial_graph);
+    streamed_directed_graph = build_directed_graph(streamed_graph);
+    streamed_weighted_transitions = build_weighted_transition_lookup(streamed_graph);
+    streamed_node_count = static_cast<int>(streamed_graph.size());
     streamed_graph_initialized = true;
+}
+
+
+TopKSummaryWithWeights process_one_timestep_from_graph_changes(
+    int num_walks,
+    const Graph_& weighted_graph,
+    const GraphChanges& changes,
+    int dummy_node,
+    double c,
+    double epsilon,
+    int k,
+    double decay_rate,
+    int t,
+    int window_size,
+    const DirectedGraph* directed_graph_override = nullptr,
+    const WeightedTransitionLookup* weighted_transitions_override = nullptr,
+    int node_count_override = -1
+) {
+    auto total_start = chrono::high_resolution_clock::now();
+    summary.changes_over_time[t] = changes;
+
+    int n = node_count_override;
+    if (n < 0) {
+        unordered_set<int> nodes_set;
+        for (const auto& p : weighted_graph) {
+            nodes_set.insert(p.first);
+            for (const auto& q : p.second)
+                nodes_set.insert(q.first);
+        }
+        n = nodes_set.size();
+    }
+    int L = calculate_required_walk_length(c, epsilon, k, n);
+
+    int walk_length = 5;
+
+    auto start = chrono::high_resolution_clock::now();
+    RandomWalkResult R;
+    WeightedTransitionLookup weighted_transitions_storage;
+    const WeightedTransitionLookup* weighted_transitions = weighted_transitions_override;
+    if (weighted_transitions == nullptr) {
+        weighted_transitions_storage = build_weighted_transition_lookup(weighted_graph);
+        weighted_transitions = &weighted_transitions_storage;
+    }
+
+    if (t%20 == 0) {
+        R = generate_random_walks_directed_weighted(
+            weighted_graph,
+            *weighted_transitions,
+            num_walks,
+            walk_length
+        );
+        summary.random_walks[0] = R;
+        cumCounts.clear();
+        counters.clear();
+    } else {
+        R = update_random_walks_directed_with_weights(
+            *weighted_transitions,
+            summary.random_walks[0].precomputed_walks,
+            summary.changes_over_time[t],
+            num_walks,
+            walk_length
+        );
+        summary.random_walks[0] = R;
+    }
+    auto end = chrono::high_resolution_clock::now();
+
+    chrono::duration<double> elapsed_update = end - start;
+
+    DirectedGraph directed_graph_storage;
+    const DirectedGraph* directed_graph = directed_graph_override;
+    if (directed_graph == nullptr) {
+        directed_graph_storage = build_directed_graph(weighted_graph);
+        directed_graph = &directed_graph_storage;
+    }
+
+    vector<int> walk = compute_personalized_pagerank(dummy_node, L, epsilon, R.precomputed_walks, *directed_graph);
+
+    summary.ppr_walks[t] = walk;
+    auto time_start = chrono::high_resolution_clock::now();
+
+    auto pr3 = MCWalks::MC_CompletePath_FromWalks(R.precomputed_walks);
+
+    auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
+
+    summary.top_k_cumsum_walks[t] = top_k_result.top_k;
+    summary.global_pr[t] = top_k_result.nontop_k;
+    weights[t] = top_k_result.individual_weights;
+
+    auto time_end = chrono::high_resolution_clock::now();
+    chrono::duration<double> elapsed_topk = time_end - time_start;
+
+    auto total_end = chrono::high_resolution_clock::now();
+    chrono::duration<double> total_elapsed = total_end - total_start;
+
+    runtime_per_timestep[t] = total_elapsed.count();
+    return {summary, weights, runtime_per_timestep};
 }
 
 
@@ -842,124 +1082,25 @@ TopKSummaryWithWeights process_one_timestep(
     bool has_next,
     int window_size
 ) {
-    // TopKSummary summary;
-    // std::unordered_map<int, std::unordered_map<int, double>> weights; // Declare weights
-    // std::unordered_map<int, double> runtime_per_timestep; // Dictionary to store runtimes
-    // std::unordered_map<int, double> cumCounts;
-    // std::unordered_map<int, std::unordered_map<int, int>> counters;  // counters for each timestep
-
-
-    // Result per timestep
-    std::vector<std::unordered_map<int, double>> pagerank_per_timestep;
-    Graph_ accumulated_graph; // initially empty
-    std::unordered_set<int> accumulated_personalization_set;
-    std::unordered_map<int, std::vector<std::vector<std::string>>> accumulated_walks;
-    std::unordered_set<int> accumulated_nodes;
-    //std::vector<std::unordered_map<int, std::vector<std::vector<std::string>>>> processed_R_per_t;
-    std::unordered_map<int,double> node_walk_weight;
-    std::unordered_map<int, std::unordered_map<int,double>> pi_MC_per_t;
-    std::unordered_map<int, double> prev_pagerank;             // stores PR from last timestep
-    std::unordered_map<int, std::unordered_map<int, double>> pagerank_per_t;  // stores PR per timestep
-
-
-
-    //for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
-        auto total_start = chrono::high_resolution_clock::now();
-        //auto graph_changes_result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
-        auto graph_changes_result = graph_changes_with_dummy_node_single(
-            current_graph,
-            next_graph,
-            queries,
-            t,
-            has_next
-        );
-        summary.changes_over_time[t] = graph_changes_result.changes;
-        std::unordered_set<int> personalization_set;
-
-        // Count all nodes in the snapshot
-        unordered_set<int> nodes_set;
-        for (const auto& p : graph_changes_result.snapshot) {
-            nodes_set.insert(p.first);
-            for (const auto& q : p.second)
-                nodes_set.insert(q.first);
-        }
-        int n = nodes_set.size();
-        int L = calculate_required_walk_length(c, epsilon, k, n);
-
-
-        int walk_length = 5;
-
-        // Preprocess (we already have weighted edges)
-        Graph_ weighted_graph = graph_changes_result.snapshot;
-
-        auto start = chrono::high_resolution_clock::now();
-        RandomWalkResult R;
-        if (t%20 == 0) {
-    
-            R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
-            summary.random_walks[0] = R;
-            cumCounts.clear(); // reset cumulative counts every 5 timesteps
-            counters.clear();  // reset counters every 5 timesteps
-
-
-        } else {
-
-            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[0].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
-            summary.random_walks[0] = R;
-        }
-        auto end = chrono::high_resolution_clock::now();
-
-
-        chrono::duration<double> elapsed_update = end - start;
-
-
-        // Create a directed graph for the walk process
-        DirectedGraph directed_graph;
-        for (const auto& p : weighted_graph) {
-            int u = p.first;
-            for (const auto& q : p.second)
-                directed_graph[u].push_back(q.first);
-        }
-
-
-  
-        // Process the random walk results
-        auto processed_R = process_walk_results(R.precomputed_walks);
-        //processed_R_per_t.push_back(processed_R);
-
-        for (const auto& [start_node, walks] : processed_R) {
-            auto& dest = accumulated_walks[start_node];
-            dest.insert(dest.end(), walks.begin(), walks.end());
-        }
-
-        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, R.precomputed_walks, directed_graph);
-
-        summary.ppr_walks[t] = walk;
-        auto time_start = chrono::high_resolution_clock::now();
-
-        auto pr3 = MCWalks::MC_CompletePath_FromWalks(processed_R);
-
-        // Calculate top-k cumulative wi
-        //auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, num_timesteps, n,c, epsilon);
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
-    
-        summary.top_k_cumsum_walks[t] = top_k_result.top_k;
-        summary.global_pr[t] = top_k_result.nontop_k;
-        weights[t] = top_k_result.individual_weights; // Store weights for the current timestep
-
-        auto time_end = chrono::high_resolution_clock::now();
-        chrono::duration<double> elapsed_topk = time_end - time_start;
-
-
-        auto total_end = chrono::high_resolution_clock::now();
-        chrono::duration<double> total_elapsed = total_end - total_start;
-
-        // Store runtime in dictionary
-        runtime_per_timestep[t] = total_elapsed.count();
-    //}
-
-    // Return both summary, weights, and runtime dictionary
-    return {summary, weights, runtime_per_timestep}; // Updated return statement
+    auto graph_changes_result = graph_changes_with_dummy_node_single(
+        current_graph,
+        next_graph,
+        queries,
+        t,
+        has_next
+    );
+    return process_one_timestep_from_graph_changes(
+        num_walks,
+        graph_changes_result.snapshot,
+        graph_changes_result.changes,
+        graph_changes_result.dummy_node,
+        c,
+        epsilon,
+        k,
+        decay_rate,
+        t,
+        window_size
+    );
 }
 
 
@@ -979,23 +1120,46 @@ TopKSummaryWithWeights process_one_timestep_delta(
         throw runtime_error("Sankofa streamed graph is not initialized.");
     }
 
-    Graph_ next_graph = has_next ? apply_raw_graph_delta(streamed_graph, raw_delta) : streamed_graph;
-    auto result = process_one_timestep(
+    int dummy_node = dummy_node_for_timestep(t);
+    vector<int> query_nodes = extract_query_nodes(queries.at(t));
+    add_dummy_node(streamed_graph, query_nodes, dummy_node);
+    streamed_directed_graph[dummy_node] = query_nodes;
+    refresh_weighted_transitions_for_node(streamed_weighted_transitions, streamed_graph, dummy_node);
+
+    auto changes = graph_changes_with_dummy_node_streamed(
+        raw_delta,
+        queries,
+        t,
+        has_next
+    );
+
+    auto result = process_one_timestep_from_graph_changes(
         num_walks,
         streamed_graph,
-        next_graph,
-        queries,
+        changes,
+        dummy_node,
         c,
         epsilon,
         k,
         decay_rate,
         t,
-        has_next,
-        window_size
+        window_size,
+        &streamed_directed_graph,
+        &streamed_weighted_transitions,
+        streamed_node_count + 1
     );
 
+    remove_dummy_node(streamed_graph, dummy_node);
+    streamed_directed_graph.erase(dummy_node);
+    streamed_weighted_transitions.neighbors.erase(dummy_node);
+    streamed_weighted_transitions.weights.erase(dummy_node);
+
     if (has_next) {
-        streamed_graph = std::move(next_graph);
+        apply_raw_graph_delta(streamed_graph, raw_delta);
+        apply_raw_graph_delta(streamed_directed_graph, raw_delta);
+        apply_raw_graph_delta(streamed_weighted_transitions, streamed_graph, raw_delta);
+        streamed_node_count += static_cast<int>(raw_delta.nodes_added.size());
+        streamed_node_count -= static_cast<int>(raw_delta.nodes_removed.size());
     }
 
     return result;

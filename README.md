@@ -27,13 +27,41 @@ The walks component of Algorithm 2 of SANKOFA is implemented in C++ using pybind
 
     `python3 main.py` 
 
-    This reuses the existing query logs.
+    This reuses a stored query bundle for the dataset when one matches the
+    current generation settings. If none exists yet, a new bundle is generated
+    and stored with the dataset.
 
 - To generate a new set of queries or compute an average over multiple runs, execute:
 
     `python3 simulate.py`
 
     The output is stored in `multi_runs` with a corresponding folder for each run.
+    Query bundles are no longer deleted between runs. Instead, run `1` uses query
+    bundle `1`, run `2` uses query bundle `2`, and so on, generating any missing
+    stored bundles on demand.
+
+## Stored Query Logs
+
+Generated query logs are stored with the dataset snapshots under:
+
+`<subgraph_dir>/query_logs/`
+
+Each reusable query bundle is kept in its own numbered folder whose name encodes
+the generation settings and the bundle id. For example:
+
+`tc5_cr0p4_q200_s1_p0_001`
+
+The folder contains:
+
+- `query_log_snapshot_<timestep>.pkl` files for each snapshot.
+- `bundle_metadata.json` with generation settings and snapshot file metadata.
+
+Reuse behavior:
+
+- A normal `main.py` run reuses the first stored bundle that matches the current query generation settings and snapshot files.
+- If no matching bundle exists, `main.py` generates a new one and stores it.
+- `simulate.py` uses bundle `1`, `2`, `3`, ... across runs so multi-run experiments stay reusable.
+- Old query logs should not be deleted anymore; they are meant to be reused.
 
 ## Sankofa Delta Cache
 
@@ -120,17 +148,11 @@ subgraph_dir = "data/test_750_6snap"
 Use a path relative to the `kg_summarization/` directory if you run `main.py`
 from there.
 
-### 3. Clear old query logs when switching datasets
+### 3. Reuse or grow stored query bundles
 
-If you change `subgraph_dir` and run `main.py` directly, clear the cached query
-logs first so you do not reuse queries generated for a different graph:
-
-```bash
-cd kg_summarization
-rm -f query_log_snapshot*.pkl generated_queries*.pkl train_queries*.pkl test_queries*.pkl query_log_*.pkl
-```
-
-`simulate.py` already deletes these files before each run.
+If you change `subgraph_dir`, SANKOFA automatically looks inside that dataset's
+own `query_logs/` directory. Matching bundles are reused, and missing ones are
+generated automatically. No manual cleanup is needed.
 
 ### 4. Run the generated test graph
 

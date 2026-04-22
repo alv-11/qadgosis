@@ -1,7 +1,7 @@
 
 """Multi-run script to execute main.py multiple times,
 - Runs the main script N_RUNS times.
-- Deletes any existing query files BEFORE each run to force regeneration.
+- Reuses stored query bundles when available and generates missing ones on demand.
 - Saves each run's outputs (CSV + PKL) into multi_runs/run_{i}/
 - Computes averaged numeric results across all runs at the end.
 
@@ -19,14 +19,6 @@ PARENT_DIR = Path("multi_runs")
 ORIGINAL_SCRIPT = "main.py"   
 PYTHON_BIN = sys.executable        
 
-QUERY_PATTERNS_TO_DELETE = [
-    "query_log_snapshot*.pkl",
-    "generated_queries*.pkl",
-    "train_queries*.pkl",
-    "test_queries*.pkl",
-    "query_log_*.pkl",
-]
-
 
 CSV_PATTERNS_TO_COLLECT = [
     "*.csv"   
@@ -37,20 +29,6 @@ PKL_PATTERNS_TO_COLLECT = [
 ]
 
 EXPECTED_CSV_NAMES = []  
-
-
-def remove_matching_files(patterns, directory="."):
-    """Delete files matching patterns in directory (non-recursive)."""
-    dirp = Path(directory)
-    removed = []
-    for pat in patterns:
-        for p in dirp.glob(pat):
-            try:
-                p.unlink()
-                removed.append(str(p))
-            except Exception as e:
-                print(f"Warning: failed to delete {p}: {e}")
-    return removed
 
 def move_matching_files(patterns, dest_dir):
     """Move files matching patterns in current directory to dest_dir."""
@@ -86,15 +64,9 @@ def main():
             shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        print(f"Selecting query bundle slot {r} for this run.")
 
-        removed = remove_matching_files(QUERY_PATTERNS_TO_DELETE, directory=".")
-        if removed:
-            print(f"Deleted {len(removed)} existing query files before run {r}.")
-        else:
-            print("No matching query files found to delete (OK).")
-
-
-        cmd = [PYTHON_BIN, ORIGINAL_SCRIPT, str(run_dir)]
+        cmd = [PYTHON_BIN, ORIGINAL_SCRIPT, str(run_dir), str(r)]
         print("Running:", " ".join(cmd))
         try:
             subprocess.run(cmd, check=True)

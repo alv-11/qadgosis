@@ -48,5 +48,23 @@ MC_CompletePath_FromWalks(
 }
 
 
+inline std::unordered_map<int, double>
+MC_CompletePath_FromWalks(
+    const std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks)
+{
+    std::unordered_map<int, double> counts;
+
+    for (const auto& [start_node, walks] : precomputed_walks) {
+        for (const auto& walk : walks) {
+            for (int node : walk)
+                counts[node] += 1.0;
+        }
+    }
+
+    normalize(counts);
+    return counts;
+}
+
+
 
 } // namespace MCWalks
