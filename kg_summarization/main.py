@@ -1,6 +1,8 @@
 
 import pandas as pd
+import time
 from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, process_summary_sankofa_streaming, BaselineEngine
+from src.progress import format_seconds, progress, progress_write
 from src.sankofa_delta import ensure_sankofa_delta_cache, graph_edge_count, graph_node_count, load_cached_snapshot_kg, load_delta, load_initial_graph
 import src.core.sankofa  as walks
 import sys
@@ -375,7 +377,7 @@ def main():
 
     subgraph_dir = "/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
 
-    print("Preparing queries...")
+    progress_write("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
         prepare_queries_and_splits(subgraph_dir, query_bundle_index=query_bundle_index)
 
@@ -403,9 +405,9 @@ def main():
     k1 = (initial_node_count ** 2) / initial_edge_count
     K = int(k1 / (0.1 / b))
 
-    print(f"Summary triple size: {summary_size}")
+    progress_write(f"Summary triple size: {summary_size}")
 
-    print("Streaming snapshots into C++...")
+    progress_write("Streaming snapshots into C++...")
     walks.reset_stream_state()
     walks.initialize_stream_graph(initial_graph)
 
@@ -413,39 +415,35 @@ def main():
     # PHASE 1 — STREAM INTO C++ (INCREMENTAL SANKOFA ENGINE)
     # ==========================================================
 
-    for t in range(total_timesteps - 1):
-        print(f"Applying cached delta for timestep {t} -> {t + 1}")
-
-        print(f"Processing timestep {t} in C++...")
+    stream_steps = progress(
+        range(total_timesteps),
+        desc="Streaming Sankofa timesteps",
+        unit="timestep",
+    )
+    for t in stream_steps:
+        has_next = t < total_timesteps - 1
 
         results = walks.process_one_timestep_delta(
             num_walks=5,
-            raw_delta=load_delta(cache, t),
+            raw_delta=load_delta(cache, t) if has_next else None,
             queries=converted_queries,
             c=2,
             epsilon=0.25,
             k=K,
             decay_rate=0.03,
             t=t,
-            has_next=True,
+            has_next=has_next,
             window_size=5
         )
+        step_runtime = results.get("runtime_per_timestep", {}).get(t)
+        top_k_count = len(results.get("top_k_cumsum_walks", {}).get(t, {}))
+        stream_steps.set_postfix(
+            step=f"{t}->{t + 1}" if has_next else f"{t} final",
+            walk=format_seconds(step_runtime),
+            topk=top_k_count,
+        )
 
-    # Final timestep
-    results = walks.process_one_timestep_delta(
-        num_walks=5,
-        raw_delta=None,
-        queries=converted_queries,
-        c=2,
-        epsilon=0.25,
-        k=K,
-        decay_rate=0.03,
-        t=total_timesteps - 1,
-        has_next=False,
-        window_size=5
-    )
-
-    print("Finished C++ streaming.")
+    progress_write("Finished C++ streaming.")
 
     # Extract Sankofa outputs
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
@@ -484,7 +482,7 @@ def main():
     # PHASE 2 — SINGLE STREAMING EVALUATION
     # ==========================================================
 
-    print("Evaluating Sankofa + Baselines...")
+    progress_write("Evaluating Sankofa + Baselines...")
 
     sankofa_rows = []
     triples_no = {}
@@ -493,12 +491,18 @@ def main():
         methods=["hhop_random", "hhop_random_outgoing", "ppr_frequency"]  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
     )
 
-    for t, file_name in enumerate(snapshot_files):
-
-        if t not in top_k_cumsum_walks:
-            continue
-
-        print(f"Evaluating {file_name} using cached snapshot graph")
+    evaluation_items = [
+        (t, file_name)
+        for t, file_name in enumerate(snapshot_files)
+        if t in top_k_cumsum_walks
+    ]
+    evaluation_steps = progress(
+        evaluation_items,
+        desc="Evaluating Sankofa + baselines",
+        unit="timestep",
+    )
+    for t, file_name in evaluation_steps:
+        started = time.perf_counter()
 
         KG = load_cached_snapshot_kg(cache, t)
 
@@ -513,7 +517,8 @@ def main():
             test_data={t: test_data[t]},
             walks_runtime=runtime_df[runtime_df["Timestep"] == t],
             max_triples=summary_size,
-            graphs_by_timestep={t: KG}
+            graphs_by_timestep={t: KG},
+            verbose=False,
         )
 
 
@@ -529,6 +534,13 @@ def main():
             training_data=training_data,
             test_data=test_data,
             weights=weights[t]
+        )
+
+        evaluation_steps.set_postfix(
+            snapshot=file_name,
+            walk=format_seconds(runtime_per_timestep.get(t)),
+            eval=format_seconds(time.perf_counter() - started),
+            triples=triples_no[t],
         )
 
         del KG
@@ -549,10 +561,10 @@ def main():
         merged_df = pd.merge(sankofa, sota, on="Timestep", how="inner")
         merged_df.to_csv("all_results.csv", index=False)
     else:
-        print("No baseline results produced.")
+        progress_write("No baseline results produced.")
         merged_df = sankofa
 
-    print("Done.")
+    progress_write("Done.")
 
 if __name__ == "__main__":
     main()

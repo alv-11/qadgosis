@@ -20,6 +20,7 @@ import json
 import pickle
 import re
 
+from src.progress import format_seconds, progress, progress_write
 
 
 
@@ -1054,7 +1055,8 @@ def process_summary_sankofa_streaming(
     test_data,
     walks_runtime=None,
     max_triples=None,
-    graphs_by_timestep=None
+    graphs_by_timestep=None,
+    verbose=True,
 ):
 
     triples_no = {}
@@ -1071,7 +1073,8 @@ def process_summary_sankofa_streaming(
 
     for key in sorted(common_keys):
 
-        print(f"Evaluating timestep {key}")
+        if verbose:
+            progress_write(f"Evaluating timestep {key}")
 
         KG = None
         if graphs_by_timestep is not None:
@@ -1174,7 +1177,8 @@ def process_summary_sankofa_streaming(
         "Weighted Future Test F1"
     ]].copy()
 
-    print(sankofa)
+    if verbose:
+        progress_write(sankofa)
 
     return triples_no, sankofa
 
@@ -1536,9 +1540,16 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
     prev_topics = None
     snapshot_paths = [Path(subgraph_dir) / file_name for file_name in snapshot_files]
 
-    print(f"Query logs: generating stored bundle {bundle_name} in {bundle_dir}.")
+    progress_write(f"Query logs: generating stored bundle {bundle_name} in {bundle_dir}.")
 
-    for timestep, snapshot_path in enumerate(snapshot_paths):
+    bundle_steps = progress(
+        enumerate(snapshot_paths),
+        total=len(snapshot_paths),
+        desc=f"Generating query bundle {bundle_name}",
+        unit="snapshot",
+    )
+    for timestep, snapshot_path in bundle_steps:
+        started = time.perf_counter()
         KG = DBPedia(rdf_gz=str(snapshot_path))
         KG.load()
 
@@ -1561,8 +1572,12 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
 
         with _query_log_path(bundle_dir, timestep).open("wb") as handle:
             pickle.dump(query_log, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-        print(f"Timestep {timestep}: generated {len(current_topics)} topics")
+        bundle_steps.set_postfix(
+            snapshot=snapshot_path.name,
+            dt=format_seconds(time.perf_counter() - started),
+            topics=len(current_topics),
+            queries=len(query_log) if query_log else 0,
+        )
         del KG
 
     metadata = {
@@ -1604,7 +1619,7 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
 
     selected = matches[target_index - 1]
     if selected["status"] == "reused":
-        print(
+        progress_write(
             f"Query logs: using stored bundle {selected['bundle_name']} "
             f"from {selected['bundle_dir']}."
         )
@@ -1615,17 +1630,32 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
 def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
     training_data, test_data, queries_ = {}, {}, {}
 
-    for timestep, _file_name in enumerate(snapshot_files):
+    load_steps = progress(
+        enumerate(snapshot_files),
+        total=len(snapshot_files),
+        desc=f"Loading query bundle {bundle_dir.name}",
+        unit="snapshot",
+    )
+    for timestep, file_name in load_steps:
         with _query_log_path(bundle_dir, timestep).open("rb") as handle:
             query_log = pickle.load(handle)
 
+        query_count = len(query_log) if query_log else 0
+
         if not query_log:
+            load_steps.set_postfix(snapshot=file_name, queries=0, train=0, test=0)
             continue
 
         split_idx = int(0.8 * len(query_log))
         training_data[timestep] = query_log[:split_idx]
         test_data[timestep] = query_log[split_idx:]
         queries_[timestep] = _build_seed_node_list(training_data[timestep])
+        load_steps.set_postfix(
+            snapshot=file_name,
+            queries=query_count,
+            train=len(training_data[timestep]),
+            test=len(test_data[timestep]),
+        )
 
     return training_data, test_data, queries_
 
@@ -1636,7 +1666,7 @@ def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle
     valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
 
     if not valid_topic_mids:
-        print(f"No valid topic_mids found in KG for snapshot {timestep}")
+        progress_write(f"No valid topic_mids found in KG for snapshot {timestep}")
         return None
 
     query_log = query_log_by_mids(
@@ -1705,7 +1735,7 @@ def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None):
         snapshot_files,
     )
 
-    print(
+    progress_write(
         f"Prepared query logs from bundle {selected_bundle['bundle_name']} "
         f"({selected_bundle['status']})."
     )

@@ -5,11 +5,13 @@ import hashlib
 import json
 import pickle
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.base import KnowledgeGraph
 from src.path import ENCODING
+from src.progress import format_bytes, format_seconds, progress, progress_write
 
 
 EDGE_WEIGHT = 0.01
@@ -110,14 +112,14 @@ def ensure_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fals
     if needs_rebuild:
         if verbose:
             reason = "rebuild requested" if rebuild else "cache missing or out of date"
-            print(
+            progress_write(
                 f"Sankofa cache: generating new cache at {cache_dir} "
                 f"({reason}; walk deltas + evaluation snapshots)."
             )
         return _build_sankofa_delta_cache(subgraph_path, snapshot_files)
 
     if verbose:
-        print(f"Sankofa cache: using preexisting cache at {cache_dir} (walk deltas + evaluation snapshots).")
+        progress_write(f"Sankofa cache: using preexisting cache at {cache_dir} (walk deltas + evaluation snapshots).")
 
     return SankofaDeltaCache(
         subgraph_dir=subgraph_path,
@@ -200,7 +202,13 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
 
     edge_counts = [graph_edge_count(reconstructed)]
 
-    for timestep in range(len(cache.snapshot_files) - 1):
+    validation_steps = progress(
+        range(len(cache.snapshot_files) - 1),
+        desc="Validating Sankofa cache",
+        unit="delta",
+    )
+    for timestep in validation_steps:
+        started = time.perf_counter()
         reconstructed = apply_delta_to_graph(reconstructed, load_delta(cache, timestep))
         expected = parse_snapshot_graph(snapshot_paths[timestep + 1])
 
@@ -209,7 +217,13 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
                 f"Cached Sankofa delta reconstruction diverged at timestep {timestep + 1}."
             )
 
-        edge_counts.append(graph_edge_count(reconstructed))
+        current_edge_count = graph_edge_count(reconstructed)
+        edge_counts.append(current_edge_count)
+        validation_steps.set_postfix(
+            snapshot=snapshot_paths[timestep + 1].name,
+            dt=format_seconds(time.perf_counter() - started),
+            edges=current_edge_count,
+        )
 
     return {
         "snapshot_count": len(cache.snapshot_files),
@@ -237,8 +251,14 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
     with (cache_dir / INITIAL_GRAPH_FILE).open("wb") as handle:
         pickle.dump(current_graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    with (snapshot_triples_dir / _snapshot_triples_filename(0)).open("wb") as handle:
+    initial_snapshot_cache_path = snapshot_triples_dir / _snapshot_triples_filename(0)
+    with initial_snapshot_cache_path.open("wb") as handle:
         pickle.dump(current_triples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    cache_bytes = (
+        (cache_dir / INITIAL_GRAPH_FILE).stat().st_size +
+        initial_snapshot_cache_path.stat().st_size
+    )
 
     manifest: dict[str, object] = {
         "version": CACHE_VERSION,
@@ -253,16 +273,33 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         "initial_edge_count": graph_edge_count(current_graph),
     }
 
-    for timestep in range(len(snapshot_paths) - 1):
+    cache_steps = progress(
+        range(len(snapshot_paths) - 1),
+        desc="Building Sankofa cache",
+        unit="delta",
+    )
+    for timestep in cache_steps:
+        started = time.perf_counter()
         next_triples = parse_snapshot_triples(snapshot_paths[timestep + 1])
         next_graph = _graph_from_snapshot_triples(next_triples, snapshot_paths[timestep + 1])
         delta = _compute_graph_delta(current_graph, next_graph)
 
-        with (deltas_dir / _delta_filename(timestep)).open("wb") as handle:
+        delta_path = deltas_dir / _delta_filename(timestep)
+        with delta_path.open("wb") as handle:
             pickle.dump(delta, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-        with (snapshot_triples_dir / _snapshot_triples_filename(timestep + 1)).open("wb") as handle:
+        snapshot_cache_path = snapshot_triples_dir / _snapshot_triples_filename(timestep + 1)
+        with snapshot_cache_path.open("wb") as handle:
             pickle.dump(next_triples, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        growth_bytes = delta_path.stat().st_size + snapshot_cache_path.stat().st_size
+        cache_bytes += growth_bytes
+        cache_steps.set_postfix(
+            snapshot=snapshot_paths[timestep + 1].name,
+            dt=format_seconds(time.perf_counter() - started),
+            cache=format_bytes(cache_bytes),
+            growth=f"+{format_bytes(growth_bytes)}",
+        )
 
         current_graph = next_graph
 

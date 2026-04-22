@@ -8,10 +8,13 @@
 """
 import subprocess
 import shutil
+import time
 from pathlib import Path
 from glob import glob
 import pandas as pd
 import sys
+
+from src.progress import format_seconds, progress, progress_write
 
 # ---------- CONFIG ----------
 NUM_RUNS = 5
@@ -41,7 +44,7 @@ def move_matching_files(patterns, dest_dir):
                     shutil.move(str(src), str(dest_dir / src.name))
                     moved.append(str(dest_dir / src.name))
                 except Exception as e:
-                    print(f"Warning: failed to move {src}: {e}")
+                    progress_write(f"Warning: failed to move {src}: {e}")
     return moved
 
 def collect_all_csv_names(parent_dir):
@@ -56,44 +59,69 @@ def collect_all_csv_names(parent_dir):
 def main():
     PARENT_DIR.mkdir(exist_ok=True)
 
-    for r in range(1, NUM_RUNS + 1):
+    success_count = 0
+    failure_count = 0
+    run_steps = progress(range(1, NUM_RUNS + 1), desc="Simulation runs", unit="run")
+    for r in run_steps:
         run_dir = PARENT_DIR / f"run_{r}"
-        print(f"\n=== RUN {r}/{NUM_RUNS} => {run_dir} ===")
+        started = time.perf_counter()
+        progress_write(f"=== RUN {r}/{NUM_RUNS} => {run_dir} ===")
 
         if run_dir.exists():
             shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"Selecting query bundle slot {r} for this run.")
+        progress_write(f"Selecting query bundle slot {r} for this run.")
 
         cmd = [PYTHON_BIN, ORIGINAL_SCRIPT, str(run_dir), str(r)]
-        print("Running:", " ".join(cmd))
+        progress_write("Running:", " ".join(cmd))
+        run_steps.clear()
         try:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
-            print(f"Error: original script failed with exit code {e.returncode}.")
-            print("Continuing to next run.")
+            run_steps.refresh()
+            failure_count += 1
+            run_steps.set_postfix(
+                run=run_dir.name,
+                ok=success_count,
+                fail=failure_count,
+                dt=format_seconds(time.perf_counter() - started),
+                code=e.returncode,
+            )
+            progress_write(f"Error: original script failed with exit code {e.returncode}.")
+            progress_write("Continuing to next run.")
             continue
+
+        run_steps.refresh()
 
         moved_csvs = move_matching_files(CSV_PATTERNS_TO_COLLECT, run_dir)
         moved_pkls = move_matching_files(PKL_PATTERNS_TO_COLLECT, run_dir)
+        success_count += 1
+        run_steps.set_postfix(
+            run=run_dir.name,
+            ok=success_count,
+            fail=failure_count,
+            dt=format_seconds(time.perf_counter() - started),
+            files=len(moved_csvs) + len(moved_pkls),
+        )
 
-        print(f"Moved {len(moved_csvs)} CSV(s) and {len(moved_pkls)} PKL(s) into {run_dir}.")
+        progress_write(f"Moved {len(moved_csvs)} CSV(s) and {len(moved_pkls)} PKL(s) into {run_dir}.")
 
     # ---------- compute averages ----------
-    print("\n=== All runs complete — computing averages ===")
+    progress_write("=== All runs complete — computing averages ===")
 
     if EXPECTED_CSV_NAMES:
         csv_names = EXPECTED_CSV_NAMES
     else:
         csv_names = collect_all_csv_names(PARENT_DIR)
         if not csv_names:
-            print("No CSV files found in run folders. Exiting.")
+            progress_write("No CSV files found in run folders. Exiting.")
             return
 
-    print("Averaging CSV files:", csv_names)
+    progress_write("Averaging CSV files:", csv_names)
 
-    for csv_name in csv_names:
+    average_steps = progress(csv_names, desc="Averaging result files", unit="file")
+    for csv_name in average_steps:
         frames = []
         for r in range(1, NUM_RUNS + 1):
             p = PARENT_DIR / f"run_{r}" / csv_name
@@ -103,10 +131,10 @@ def main():
                     df["run"] = r
                     frames.append(df)
                 except Exception as e:
-                    print(f"Warning: failed to read {p}: {e}")
+                    progress_write(f"Warning: failed to read {p}: {e}")
 
         if not frames:
-            print(f"No data for {csv_name}; skipping.")
+            progress_write(f"No data for {csv_name}; skipping.")
             continue
 
         combined = pd.concat(frames, ignore_index=True)
@@ -116,11 +144,17 @@ def main():
         else:
             averaged = combined.mean(numeric_only=True).to_frame().T
 
+        average_steps.set_postfix(
+            file=csv_name,
+            runs=len(frames),
+            rows=len(combined),
+        )
+
         out_path = PARENT_DIR / f"average_{csv_name}"
         averaged.to_csv(out_path, index=False)
-        print(f"Saved averaged results to {out_path}")
+        progress_write(f"Saved averaged results to {out_path}")
 
-    print("\nDone.")
+    progress_write("Done.")
 
 if __name__ == "__main__":
     main()
