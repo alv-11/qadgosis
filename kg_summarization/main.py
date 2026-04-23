@@ -1,21 +1,48 @@
 
 import pandas as pd
 import time
-from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, process_summary_sankofa_streaming, BaselineEngine
+import os
+from src.summary import process_snapshots, analyze_graph_properties, process_summary_sankofa,  process_summary_baselines, prepare_queries_and_splits, evaluate_sankofa_timestep, BaselineEngine
 from src.progress import format_seconds, progress, progress_write
-from src.sankofa_delta import ensure_sankofa_delta_cache, graph_edge_count, graph_node_count, load_cached_snapshot_kg, load_delta, load_initial_graph
+from src.sankofa_delta import ensure_sankofa_delta_cache, graph_edge_count, graph_node_count, initialize_streamed_evaluation_graph, load_delta, load_initial_graph, load_triple_delta, apply_triple_delta_to_knowledge_graph
 import src.core.sankofa  as walks
 import sys
 from pathlib import Path
 import json
-run_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
+from datetime import datetime, timezone
+
+run_dir = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(".").resolve()
 query_bundle_index = int(sys.argv[2]) if len(sys.argv) > 2 else None
 
 MIN_SUMMARY_SIZE = 4
+DEFAULT_SUBGRAPH_DIR = "/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"
+DEFAULT_NUM_WALKS = 5
+DEFAULT_C = 2
+DEFAULT_EPSILON = 0.25
+DEFAULT_DECAY_RATE = 0.03
+DEFAULT_WINDOW_SIZE = 5
+DEFAULT_BUDGET_RATIO = 0.005
+DEFAULT_BASELINE_METHODS = ["hhop_random", "hhop_random_outgoing", "ppr_frequency"]
 
 
 def compute_summary_size(edge_count, budget_ratio, floor=MIN_SUMMARY_SIZE):
     return max(floor, int(edge_count * budget_ratio))
+
+
+def resolve_subgraph_dir():
+    return os.environ.get("QADGOSIS_SUBGRAPH_DIR", DEFAULT_SUBGRAPH_DIR)
+
+
+def output_path(filename):
+    return run_dir / filename
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def live_progress_enabled():
+    return os.environ.get("QADGOSIS_LIVE_RUN_PROGRESS") == "1"
 
 
 
@@ -374,8 +401,9 @@ def build_changes_dataframe(changes_over_time, queries_):
 
 
 def main():
-
-    subgraph_dir = "/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"#/Users/au735195/Pictures/wiki2017/experiments/snapshots"#"/Users/au735195/Desktop/wiki_original/snapshots_all"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    started_at = utc_now_iso()
+    subgraph_dir = resolve_subgraph_dir()
 
     progress_write("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
@@ -400,16 +428,25 @@ def main():
     if initial_edge_count == 0:
         raise ValueError("Initial Sankofa graph has no edges.")
 
-    b = 0.005
+    b = DEFAULT_BUDGET_RATIO
     summary_size = compute_summary_size(initial_edge_count, b)
     k1 = (initial_node_count ** 2) / initial_edge_count
     K = int(k1 / (0.1 / b))
 
     progress_write(f"Summary triple size: {summary_size}")
 
-    progress_write("Streaming snapshots into C++...")
+    progress_write("Streaming snapshots into C++ and evaluating each timestep...")
     walks.reset_stream_state()
     walks.initialize_stream_graph(initial_graph)
+
+    sankofa_rows = []
+    triples_no = {}
+    baseline_methods = list(DEFAULT_BASELINE_METHODS)
+    baseline_engine = BaselineEngine(
+        methods=baseline_methods  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
+    )
+    evaluation_graph = initialize_streamed_evaluation_graph(cache)
+    incoming_triple_delta = None
 
     # ==========================================================
     # PHASE 1 — STREAM INTO C++ (INCREMENTAL SANKOFA ENGINE)
@@ -424,26 +461,64 @@ def main():
         has_next = t < total_timesteps - 1
 
         results = walks.process_one_timestep_delta(
-            num_walks=5,
+            num_walks=DEFAULT_NUM_WALKS,
             raw_delta=load_delta(cache, t) if has_next else None,
             queries=converted_queries,
-            c=2,
-            epsilon=0.25,
+            c=DEFAULT_C,
+            epsilon=DEFAULT_EPSILON,
             k=K,
-            decay_rate=0.03,
+            decay_rate=DEFAULT_DECAY_RATE,
             t=t,
             has_next=has_next,
-            window_size=5
+            window_size=DEFAULT_WINDOW_SIZE
         )
         step_runtime = results.get("runtime_per_timestep", {}).get(t)
-        top_k_count = len(results.get("top_k_cumsum_walks", {}).get(t, {}))
+        top_k_nodes = results.get("top_k_cumsum_walks", {}).get(t, {})
+        top_k_count = len(top_k_nodes)
+
+        sankofa_triples, sankofa_df = evaluate_sankofa_timestep(
+            t,
+            evaluation_graph,
+            top_k_nodes,
+            test_data,
+            weights=results.get("all_weights", {}).get(t, {}),
+            global_pr=results.get("global_pr", {}).get(t, {}),
+            max_triples=summary_size,
+            walk_runtime=step_runtime,
+        )
+
+        triples_no[t] = sankofa_triples
+        sankofa_rows.append(sankofa_df)
+
+        baseline_engine.process_timestep(
+            KG=evaluation_graph,
+            t=t,
+            K=sankofa_triples,
+            training_data=training_data,
+            test_data=test_data,
+            weights=results.get("all_weights", {}).get(t, {}),
+            graph_delta=incoming_triple_delta,
+        )
+
+        if has_next:
+            outgoing_triple_delta = load_triple_delta(cache, t)
+            apply_triple_delta_to_knowledge_graph(evaluation_graph, outgoing_triple_delta)
+            incoming_triple_delta = outgoing_triple_delta
+
         stream_steps.set_postfix(
             step=f"{t}->{t + 1}" if has_next else f"{t} final",
             walk=format_seconds(step_runtime),
             topk=top_k_count,
+            triples=sankofa_triples,
         )
 
-    progress_write("Finished C++ streaming.")
+        if live_progress_enabled():
+            progress_write(
+                f"{run_dir.name}: timestep {t + 1}/{total_timesteps} "
+                f"walk={format_seconds(step_runtime)} topk={top_k_count} triples={sankofa_triples}"
+            )
+
+    progress_write("Finished C++ streaming and per-timestep evaluation.")
 
     # Extract Sankofa outputs
     top_k_cumsum_walks = results["top_k_cumsum_walks"]
@@ -454,7 +529,7 @@ def main():
     changes_in_topk = results["changes_over_time"]
 
 
-    with open("queries.json", "w") as f:
+    with output_path("queries.json").open("w", encoding="utf-8") as f:
         json.dump(queries_, f, indent=4)
     df_changes = build_changes_dataframe(changes_in_topk, queries_)
 
@@ -473,96 +548,51 @@ def main():
 
     #df_changes = pd.DataFrame(count_changes).sort_values(by="timestep")
 
-    runtime_df = pd.DataFrame(
-        [{"Timestep": t, "Runtime (walks)": runtime}
-         for t, runtime in runtime_per_timestep.items()]
-    ).sort_values(by="Timestep")
-
-    # ==========================================================
-    # PHASE 2 — SINGLE STREAMING EVALUATION
-    # ==========================================================
-
-    progress_write("Evaluating Sankofa + Baselines...")
-
-    sankofa_rows = []
-    triples_no = {}
-
-    baseline_engine = BaselineEngine(
-        methods=["hhop_random", "hhop_random_outgoing", "ppr_frequency"]  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
-    )
-
-    evaluation_items = [
-        (t, file_name)
-        for t, file_name in enumerate(snapshot_files)
-        if t in top_k_cumsum_walks
-    ]
-    evaluation_steps = progress(
-        evaluation_items,
-        desc="Evaluating Sankofa + baselines",
-        unit="timestep",
-    )
-    for t, file_name in evaluation_steps:
-        started = time.perf_counter()
-
-        KG = load_cached_snapshot_kg(cache, t)
-
-        # ------------------- SANKOFA -------------------
-        triples_no_t, sankofa_df = process_summary_sankofa_streaming(
-            top_k_nodes_dict={t: top_k_cumsum_walks[t]},
-            snapshot_files=snapshot_files,
-            subgraph_dir=subgraph_dir,
-            label="Cumsum Walks",
-            weights={t: weights[t]},
-            global_pr_dict={t: non_topk_global_pr[t]},
-            test_data={t: test_data[t]},
-            walks_runtime=runtime_df[runtime_df["Timestep"] == t],
-            max_triples=summary_size,
-            graphs_by_timestep={t: KG},
-            verbose=False,
-        )
-
-
-        triples_no[t] = triples_no_t[t]
-        sankofa_rows.append(sankofa_df)
-
-        # ------------------- BASELINES -------------------
-
-        baseline_engine.process_timestep(
-            KG=KG,
-            t=t,
-            K=triples_no[t],
-            training_data=training_data,
-            test_data=test_data,
-            weights=weights[t]
-        )
-
-        evaluation_steps.set_postfix(
-            snapshot=file_name,
-            walk=format_seconds(runtime_per_timestep.get(t)),
-            eval=format_seconds(time.perf_counter() - started),
-            triples=triples_no[t],
-        )
-
-        del KG
-
-    # ==========================================================
-    # FINAL MERGE
-    # ==========================================================
-    
     sankofa = pd.concat(sankofa_rows, ignore_index=True)
-    sankofa.to_csv("sankofa_results.csv", index=False)
-    with open("changes_in_topk.json", "w") as f:
+    sankofa.to_csv(output_path("sankofa_results.csv"), index=False)
+    with output_path("changes_in_topk.json").open("w", encoding="utf-8") as f:
         json.dump(changes_in_topk, f, indent=4)
-    df_changes.to_csv("changes_in_topk.csv", index=False)
+    df_changes.to_csv(output_path("changes_in_topk.csv"), index=False)
 
     sota = baseline_engine.finalize()
 
     if not sota.empty:
         merged_df = pd.merge(sankofa, sota, on="Timestep", how="inner")
-        merged_df.to_csv("all_results.csv", index=False)
+        merged_df.to_csv(output_path("all_results.csv"), index=False)
     else:
         progress_write("No baseline results produced.")
         merged_df = sankofa
+
+    with output_path("run_metadata.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "started_at": started_at,
+            "finished_at": utc_now_iso(),
+            "run_dir": str(run_dir),
+            "subgraph_dir": str(subgraph_dir),
+            "query_bundle_index": query_bundle_index,
+            "snapshot_count": total_timesteps,
+            "initial_node_count": initial_node_count,
+            "initial_edge_count": initial_edge_count,
+            "summary_size": summary_size,
+            "settings": {
+                "num_walks": DEFAULT_NUM_WALKS,
+                "c": DEFAULT_C,
+                "epsilon": DEFAULT_EPSILON,
+                "k": K,
+                "decay_rate": DEFAULT_DECAY_RATE,
+                "window_size": DEFAULT_WINDOW_SIZE,
+                "budget_ratio": b,
+                "baseline_methods": baseline_methods,
+            },
+            "outputs": {
+                "queries": str(output_path("queries.json")),
+                "sankofa_results": str(output_path("sankofa_results.csv")),
+                "changes_in_topk_json": str(output_path("changes_in_topk.json")),
+                "changes_in_topk_csv": str(output_path("changes_in_topk.csv")),
+                "all_results": str(output_path("all_results.csv")) if not sota.empty else None,
+            },
+            "cache_dir": str(cache.cache_dir),
+        }, f, indent=2)
 
     progress_write("Done.")
 

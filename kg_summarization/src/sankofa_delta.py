@@ -15,11 +15,12 @@ from src.progress import format_bytes, format_seconds, progress, progress_write
 
 
 EDGE_WEIGHT = 0.01
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 CACHE_DIR_NAME = ".sankofa_cache"
 MANIFEST_FILE = "manifest.json"
 INITIAL_GRAPH_FILE = "initial_graph.pkl"
 DELTAS_DIR_NAME = "deltas"
+TRIPLE_DELTAS_DIR_NAME = "triple_deltas"
 SNAPSHOT_TRIPLES_DIR_NAME = "snapshot_triples"
 PROJECT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -27,6 +28,7 @@ Graph = dict[int, dict[int, float]]
 GraphDelta = dict[str, object]
 SnapshotTriple = tuple[str, str, str]
 SnapshotTriples = list[SnapshotTriple]
+TripleDelta = dict[str, SnapshotTriples]
 GENERATED_CACHE_STATUS = "generated"
 REUSED_CACHE_STATUS = "reused"
 
@@ -49,6 +51,13 @@ class SankofaDeltaCache:
 
     def delta_path(self, timestep: int) -> Path:
         return self.deltas_dir / _delta_filename(timestep)
+
+    @property
+    def triple_deltas_dir(self) -> Path:
+        return self.cache_dir / TRIPLE_DELTAS_DIR_NAME
+
+    def triple_delta_path(self, timestep: int) -> Path:
+        return self.triple_deltas_dir / _delta_filename(timestep)
 
     @property
     def snapshot_triples_dir(self) -> Path:
@@ -145,6 +154,11 @@ def load_snapshot_triples(cache: SankofaDeltaCache, timestep: int) -> SnapshotTr
         return pickle.load(handle)
 
 
+def load_triple_delta(cache: SankofaDeltaCache, timestep: int) -> TripleDelta:
+    with cache.triple_delta_path(timestep).open("rb") as handle:
+        return pickle.load(handle)
+
+
 def build_knowledge_graph(snapshot_triples: SnapshotTriples) -> KnowledgeGraph:
     graph = KnowledgeGraph()
     for triple in snapshot_triples:
@@ -154,6 +168,19 @@ def build_knowledge_graph(snapshot_triples: SnapshotTriples) -> KnowledgeGraph:
 
 def load_cached_snapshot_kg(cache: SankofaDeltaCache, timestep: int) -> KnowledgeGraph:
     return build_knowledge_graph(load_snapshot_triples(cache, timestep))
+
+
+def initialize_streamed_evaluation_graph(cache: SankofaDeltaCache) -> KnowledgeGraph:
+    return load_cached_snapshot_kg(cache, 0)
+
+
+def apply_triple_delta_to_knowledge_graph(graph: KnowledgeGraph, delta: TripleDelta) -> bool:
+    triples_removed = [tuple(triple) for triple in delta["triples_removed"]]
+    triples_added = [tuple(triple) for triple in delta["triples_added"]]
+    return graph.apply_triple_delta(
+        triples_added=triples_added,
+        triples_removed=triples_removed,
+    )
 
 
 def apply_delta_to_graph(current_graph: Graph, delta: GraphDelta) -> Graph:
@@ -236,12 +263,14 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
 def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) -> SankofaDeltaCache:
     cache_dir = resolve_cache_dir(subgraph_dir)
     deltas_dir = cache_dir / DELTAS_DIR_NAME
+    triple_deltas_dir = cache_dir / TRIPLE_DELTAS_DIR_NAME
     snapshot_triples_dir = cache_dir / SNAPSHOT_TRIPLES_DIR_NAME
 
     if cache_dir.exists():
         shutil.rmtree(cache_dir)
 
     deltas_dir.mkdir(parents=True, exist_ok=True)
+    triple_deltas_dir.mkdir(parents=True, exist_ok=True)
     snapshot_triples_dir.mkdir(parents=True, exist_ok=True)
 
     snapshot_paths = [subgraph_dir / file_name for file_name in snapshot_files]
@@ -266,6 +295,7 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         "snapshot_files": [_snapshot_metadata(path) for path in snapshot_paths],
         "initial_graph": INITIAL_GRAPH_FILE,
         "deltas_dir": DELTAS_DIR_NAME,
+        "triple_deltas_dir": TRIPLE_DELTAS_DIR_NAME,
         "snapshot_triples_dir": SNAPSHOT_TRIPLES_DIR_NAME,
         "delta_count": max(0, len(snapshot_paths) - 1),
         "snapshot_triples_count": len(snapshot_paths),
@@ -283,16 +313,25 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         next_triples = parse_snapshot_triples(snapshot_paths[timestep + 1])
         next_graph = _graph_from_snapshot_triples(next_triples, snapshot_paths[timestep + 1])
         delta = _compute_graph_delta(current_graph, next_graph)
+        triple_delta = _compute_triple_delta(current_triples, next_triples)
 
         delta_path = deltas_dir / _delta_filename(timestep)
         with delta_path.open("wb") as handle:
             pickle.dump(delta, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
+        triple_delta_path = triple_deltas_dir / _delta_filename(timestep)
+        with triple_delta_path.open("wb") as handle:
+            pickle.dump(triple_delta, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
         snapshot_cache_path = snapshot_triples_dir / _snapshot_triples_filename(timestep + 1)
         with snapshot_cache_path.open("wb") as handle:
             pickle.dump(next_triples, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-        growth_bytes = delta_path.stat().st_size + snapshot_cache_path.stat().st_size
+        growth_bytes = (
+            delta_path.stat().st_size +
+            triple_delta_path.stat().st_size +
+            snapshot_cache_path.stat().st_size
+        )
         cache_bytes += growth_bytes
         cache_steps.set_postfix(
             snapshot=snapshot_paths[timestep + 1].name,
@@ -302,6 +341,7 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         )
 
         current_graph = next_graph
+    current_triples = next_triples
 
     with (cache_dir / MANIFEST_FILE).open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
@@ -339,12 +379,17 @@ def _cache_is_valid(
     if manifest.get("snapshot_triples_dir") != SNAPSHOT_TRIPLES_DIR_NAME:
         return False
 
+    if manifest.get("triple_deltas_dir") != TRIPLE_DELTAS_DIR_NAME:
+        return False
+
     manifest_snapshots = manifest.get("snapshot_files")
     if not isinstance(manifest_snapshots, list) or len(manifest_snapshots) != len(snapshot_files):
         return False
 
     for timestep in range(max(0, len(snapshot_files) - 1)):
         if not (cache_dir / DELTAS_DIR_NAME / _delta_filename(timestep)).exists():
+            return False
+        if not (cache_dir / TRIPLE_DELTAS_DIR_NAME / _delta_filename(timestep)).exists():
             return False
 
     for timestep in range(len(snapshot_files)):
@@ -395,6 +440,16 @@ def _compute_graph_delta(current_graph: Graph, next_graph: Graph) -> GraphDelta:
         "nodes_removed": sorted(current_nodes - next_nodes),
         "edges_added": edges_added,
         "edges_removed": edges_removed,
+    }
+
+
+def _compute_triple_delta(current_triples: SnapshotTriples, next_triples: SnapshotTriples) -> TripleDelta:
+    current_set = set(current_triples)
+    next_set = set(next_triples)
+
+    return {
+        "triples_added": [triple for triple in next_triples if triple not in current_set],
+        "triples_removed": [triple for triple in current_triples if triple not in next_set],
     }
 
 

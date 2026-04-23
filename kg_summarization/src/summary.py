@@ -1183,6 +1183,51 @@ def process_summary_sankofa_streaming(
     return triples_no, sankofa
 
 
+def evaluate_sankofa_timestep(
+    timestep,
+    KG,
+    top_k_nodes,
+    test_data,
+    weights,
+    global_pr,
+    *,
+    max_triples=None,
+    walk_runtime=None,
+):
+    top_k_nodes = {str(n): v for n, v in top_k_nodes.items()}
+    non_top_k_nodes = {str(n): v for n, v in global_pr.items()}
+    non_top_k_nodes = {k: v for k, v in non_top_k_nodes.items() if k not in top_k_nodes}
+
+    started = time.time()
+    summary = SummaryGraph(KG, top_k_nodes, non_top_k_nodes, max_triples)
+    summary_runtime = time.time() - started
+
+    total_F1, _, _ = total_query_log_metrics(summary, test_data[timestep])
+
+    df_weight = process_all_timesteps(
+        training_set=test_data,
+        summary=summary,
+        i=timestep,
+        test_weights=_normalize_weights(weights),
+    )
+
+    weighted_future_f1 = 0.0
+    if df_weight is not None and not df_weight.empty and "Total F1" in df_weight.columns:
+        weighted_future_f1 = float(df_weight["Total F1"].iloc[0])
+
+    walk_seconds = 0.0 if walk_runtime is None else float(walk_runtime)
+    sankofa_row = pd.DataFrame([
+        {
+            "Timestep": int(timestep),
+            "Runtime (seconds)": summary_runtime + walk_seconds,
+            "Future Test F1": total_F1,
+            "Weighted Future Test F1": weighted_future_f1,
+        }
+    ])
+
+    return summary.triple_count, sankofa_row
+
+
 class BaselineEngine:
 
     def __init__(self, methods):
@@ -1200,11 +1245,11 @@ class BaselineEngine:
 
         self.weighted_rows = {method_name: [] for method_name in self.methods}
 
-    def process_timestep(self, KG, t, K, training_data, test_data, weights):
+    def process_timestep(self, KG, t, K, training_data, test_data, weights, graph_delta=None):
 
         for method_name in self.methods:
             if method_name == "apex":
-                self._run_apex(method_name, KG, t, K, training_data, test_data, weights)
+                self._run_apex(method_name, KG, t, K, training_data, test_data, weights, graph_delta)
             else:
                 self._run_stateless_baseline(method_name, KG, t, K, training_data, test_data, weights)
 
@@ -1229,7 +1274,7 @@ class BaselineEngine:
         self._run_stateless_baseline("glimpse", KG, t, K, training_data, test_data, weights)
 
 
-    def _run_apex(self, method_name, KG, t, K, training_data, test_data, weights):
+    def _run_apex(self, method_name, KG, t, K, training_data, test_data, weights, graph_delta=None):
         method_label = _baseline_label(method_name)
 
         test_w = weights
@@ -1239,16 +1284,17 @@ class BaselineEngine:
                 KG, K, training_data[t], test_data[t], t=t
             )
         else:
+            H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev = self._prepare_apex_state_for_graph(KG, graph_delta)
             try:
                 P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
                     KG, K, training_data[t], test_data[t],
                     t=t,
-                    H=self.apex_state["H"],
-                    q=self.apex_state["q"],
-                    e=self.apex_state["e"],
-                    r=self.apex_state["r"],
-                    csr_indirect_matrices=self.apex_state["csr"],
-                    index_list=self.apex_state["index_list"]
+                    H=H_prev,
+                    q=q_prev,
+                    e=e_prev,
+                    r=r_prev,
+                    csr_indirect_matrices=csr_prev,
+                    index_list=index_prev
                 )
             except Exception:
                 P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
@@ -1278,6 +1324,49 @@ class BaselineEngine:
         )
 
         self.weighted_rows[method_name].append(df_w)
+
+
+    def _prepare_apex_state_for_graph(self, KG, graph_delta):
+        H_prev = self.apex_state["H"]
+        q_prev = self.apex_state["q"]
+        e_prev = self.apex_state["e"]
+        r_prev = self.apex_state["r"]
+        csr_prev = self.apex_state["csr"]
+        index_prev = self.apex_state["index_list"]
+
+        entity_count = KG.number_of_entities()
+        relation_count = KG.number_of_relationships()
+
+        if q_prev is not None and len(q_prev) < entity_count:
+            q_prev = np.pad(q_prev, (0, entity_count - len(q_prev)))
+
+        if e_prev is not None and len(e_prev) < entity_count:
+            e_prev = np.pad(e_prev, (0, entity_count - len(e_prev)))
+
+        if r_prev is not None and len(r_prev) < relation_count:
+            r_prev = np.pad(r_prev, (0, relation_count - len(r_prev)))
+
+        if graph_delta is not None:
+            removed_triples = {
+                (
+                    KG.entity_id(triple[0]),
+                    KG.relation_id(triple[1]),
+                    KG.entity_id(triple[2]),
+                )
+                for triple in graph_delta.get("triples_removed", [])
+            }
+
+            if H_prev is not None:
+                H_prev = dict(H_prev)
+                for triple_id in removed_triples:
+                    H_prev[triple_id] = 0.0
+
+            if index_prev is not None:
+                index_prev = [triple_id for triple_id in index_prev if triple_id not in removed_triples]
+
+            csr_prev = None
+
+        return H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev
 
 
     def _run_isummary(self, KG, t, K, training_data, test_data, weights):

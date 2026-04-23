@@ -46,6 +46,16 @@ class KnowledgeGraph(object):
         self.csr_matrix_indirect_heat_ = None
 
         self.triples_by_relation_id_ = {}
+
+    def _invalidate_cached_views(self):
+        self.csr_matrix_ = None
+        self.csr_matrix_T_ = None
+        self.csr_matrix_indirect_ = None
+        self.csr_matrix_heterogeneous_ = None
+        self.csr_matrix_heterogeneous_indirect_ = None
+        self.transition_matrix_ = None
+        self.csr_matrix_indirect_heat_ = None
+        self.triples_by_relation_id_ = {}
         
 
     def name(self):
@@ -190,6 +200,45 @@ class KnowledgeGraph(object):
             if e2 not in self.entities_to_relation_[e1]:
                 self.entities_to_relation_[e1][e2] = set()
             self.entities_to_relation_[e1][e2].add(r)
+
+            self._invalidate_cached_views()
+
+    def remove_triple(self, triple):
+        e1, r, e2 = triple
+        if not self.has_triple(triple):
+            return False
+
+        self.triples_[e1][r].remove(e2)
+        if not self.triples_[e1][r]:
+            del self.triples_[e1][r]
+        if not self.triples_[e1]:
+            del self.triples_[e1]
+
+        if e1 in self.entities_to_relation_ and e2 in self.entities_to_relation_[e1]:
+            self.entities_to_relation_[e1][e2].discard(r)
+            if not self.entities_to_relation_[e1][e2]:
+                del self.entities_to_relation_[e1][e2]
+            if not self.entities_to_relation_[e1]:
+                del self.entities_to_relation_[e1]
+
+        self.number_of_triples_ -= 1
+        self._invalidate_cached_views()
+        return True
+
+    def apply_triple_delta(self, triples_added=None, triples_removed=None):
+        triples_removed = triples_removed or []
+        triples_added = triples_added or []
+
+        changed = False
+        for triple in triples_removed:
+            changed = self.remove_triple(triple) or changed
+
+        for triple in triples_added:
+            before = self.number_of_triples_
+            self.add_triple(triple)
+            changed = changed or self.number_of_triples_ != before
+
+        return changed
 
 
 
