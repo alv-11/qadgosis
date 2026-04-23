@@ -576,7 +576,8 @@ def main():
 
             run_steps.set_postfix(ok=success_count, fail=failure_count, active=len(active))
             progress_write(
-                f"Finished run {record['run_index']} ({record['status']}) in {format_seconds(record['duration_seconds'])}."
+                f"Finished run {record['run_index']} ({record['status']}) at {record['finished_at']} "
+                f"in {format_seconds(record['duration_seconds'])}."
             )
 
         if pending or active:

@@ -1645,6 +1645,7 @@ def _next_query_bundle_id(subgraph_dir, settings):
 
 
 def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
+    bundle_started = time.perf_counter()
     bundle_root = _query_bundle_root(subgraph_dir)
     bundle_root.mkdir(parents=True, exist_ok=True)
 
@@ -1654,8 +1655,12 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
 
     prev_topics = None
     snapshot_paths = [Path(subgraph_dir) / file_name for file_name in snapshot_files]
+    total_queries = 0
 
-    progress_write(f"Query logs: generating stored bundle {bundle_name} in {bundle_dir}.")
+    progress_write(
+        f"Query logs: generating stored bundle {bundle_name} in {bundle_dir} "
+        f"for {len(snapshot_paths)} snapshots (settings={_query_bundle_prefix(settings)})."
+    )
 
     bundle_steps = progress(
         enumerate(snapshot_paths),
@@ -1665,8 +1670,10 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
     )
     for timestep, snapshot_path in bundle_steps:
         started = time.perf_counter()
+        kg_load_started = time.perf_counter()
         KG = DBPedia(rdf_gz=str(snapshot_path))
         KG.load()
+        kg_load_seconds = time.perf_counter() - kg_load_started
 
         current_topics = update_topics_fixed(
             prev_topics,
@@ -1685,13 +1692,17 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
             random_query_prob=settings["random_query_prob"],
         )
 
+        query_count = len(query_log) if query_log else 0
+        total_queries += query_count
+
         with _query_log_path(bundle_dir, timestep).open("wb") as handle:
             pickle.dump(query_log, handle, protocol=pickle.HIGHEST_PROTOCOL)
         bundle_steps.set_postfix(
             snapshot=snapshot_path.name,
             dt=format_seconds(time.perf_counter() - started),
+            load=format_seconds(kg_load_seconds),
             topics=len(current_topics),
-            queries=len(query_log) if query_log else 0,
+            queries=query_count,
         )
         del KG
 
@@ -1705,6 +1716,11 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
 
     with _query_bundle_metadata_path(bundle_dir).open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2)
+
+    progress_write(
+        f"Query logs: bundle {bundle_name} ready snapshots={len(snapshot_paths)} "
+        f"queries={total_queries:,} dt={format_seconds(time.perf_counter() - bundle_started)}"
+    )
 
     return {
         "bundle_id": bundle_id,
@@ -1720,7 +1736,26 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
         raise ValueError("query_bundle_index must be >= 1")
 
     target_index = 1 if query_bundle_index is None else query_bundle_index
+    bundle_root = _query_bundle_root(subgraph_dir)
+    progress_write(
+        f"Query logs: resolving bundle {target_index} under {bundle_root} "
+        f"for {len(snapshot_files)} snapshots (settings={_query_bundle_prefix(settings)})."
+    )
     matches = _find_matching_query_bundles(subgraph_dir, settings, snapshot_files)
+
+    if matches:
+        progress_write(
+            f"Query logs: found {len(matches)} matching stored bundle(s); "
+            f"highest bundle id is {matches[-1]['bundle_id']}."
+        )
+    else:
+        progress_write("Query logs: no matching stored bundles found.")
+
+    if len(matches) < target_index:
+        progress_write(
+            f"Query logs: generating {target_index - len(matches)} additional bundle(s) "
+            f"to satisfy requested bundle {target_index}."
+        )
 
     while len(matches) < target_index:
         next_bundle = _generate_query_bundle(

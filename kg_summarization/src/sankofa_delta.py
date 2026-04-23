@@ -127,12 +127,15 @@ def ensure_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fals
                 reason = "rebuild requested" if rebuild else "cache missing or out of date"
                 progress_write(
                     f"Sankofa cache: generating new cache at {cache_dir} "
-                    f"({reason}; walk deltas + evaluation snapshots)."
+                    f"for {len(snapshot_files)} snapshots ({reason}; walk deltas + evaluation snapshots)."
                 )
             return _build_sankofa_delta_cache(subgraph_path, snapshot_files)
 
         if verbose:
-            progress_write(f"Sankofa cache: using preexisting cache at {cache_dir} (walk deltas + evaluation snapshots).")
+            progress_write(
+                f"Sankofa cache: using preexisting cache at {cache_dir} "
+                f"for {len(snapshot_files)} snapshots (walk deltas + evaluation snapshots)."
+            )
 
         return SankofaDeltaCache(
             subgraph_dir=subgraph_path,
@@ -314,21 +317,36 @@ def _cache_build_lock(subgraph_dir: Path, *, verbose: bool):
 
 
 def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) -> SankofaDeltaCache:
+    build_started = time.perf_counter()
     cache_dir = resolve_cache_dir(subgraph_dir)
     deltas_dir = cache_dir / DELTAS_DIR_NAME
     triple_deltas_dir = cache_dir / TRIPLE_DELTAS_DIR_NAME
     snapshot_triples_dir = cache_dir / SNAPSHOT_TRIPLES_DIR_NAME
+    snapshot_paths = [subgraph_dir / file_name for file_name in snapshot_files]
+
+    progress_write(
+        f"Sankofa cache: building walk deltas and evaluation snapshots from {len(snapshot_paths)} snapshots "
+        f"under {subgraph_dir}."
+    )
 
     if cache_dir.exists():
+        progress_write(f"Sankofa cache: clearing stale cache contents in {cache_dir}.")
         shutil.rmtree(cache_dir)
 
     deltas_dir.mkdir(parents=True, exist_ok=True)
     triple_deltas_dir.mkdir(parents=True, exist_ok=True)
     snapshot_triples_dir.mkdir(parents=True, exist_ok=True)
 
-    snapshot_paths = [subgraph_dir / file_name for file_name in snapshot_files]
+    initial_started = time.perf_counter()
+    progress_write(f"Sankofa cache: parsing initial snapshot {snapshot_paths[0].name}...")
     current_triples = parse_snapshot_triples(snapshot_paths[0])
     current_graph = _graph_from_snapshot_triples(current_triples, snapshot_paths[0])
+
+    progress_write(
+        f"Sankofa cache: initial snapshot {snapshot_paths[0].name} ready "
+        f"nodes={graph_node_count(current_graph):,} edges={graph_edge_count(current_graph):,} "
+        f"triples={len(current_triples):,} dt={format_seconds(time.perf_counter() - initial_started)}"
+    )
 
     with (cache_dir / INITIAL_GRAPH_FILE).open("wb") as handle:
         pickle.dump(current_graph, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -355,6 +373,12 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         "initial_node_count": graph_node_count(current_graph),
         "initial_edge_count": graph_edge_count(current_graph),
     }
+
+    if len(snapshot_paths) > 1:
+        progress_write(
+            f"Sankofa cache: computing {len(snapshot_paths) - 1} graph deltas, "
+            f"triple deltas, and snapshot triple caches..."
+        )
 
     cache_steps = progress(
         range(len(snapshot_paths) - 1),
@@ -386,18 +410,34 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
             snapshot_cache_path.stat().st_size
         )
         cache_bytes += growth_bytes
+        edge_delta_added = len(delta["edges_added"])
+        edge_delta_removed = len(delta["edges_removed"])
+        triple_delta_added = len(triple_delta["triples_added"])
+        triple_delta_removed = len(triple_delta["triples_removed"])
         cache_steps.set_postfix(
             snapshot=snapshot_paths[timestep + 1].name,
             dt=format_seconds(time.perf_counter() - started),
+            edges=f"+{edge_delta_added}/-{edge_delta_removed}",
+            triples=f"+{triple_delta_added}/-{triple_delta_removed}",
             cache=format_bytes(cache_bytes),
             growth=f"+{format_bytes(growth_bytes)}",
         )
 
         current_graph = next_graph
-    current_triples = next_triples
 
-    with (cache_dir / MANIFEST_FILE).open("w", encoding="utf-8") as handle:
+    manifest_path = cache_dir / MANIFEST_FILE
+    with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, indent=2)
+
+    progress_write(
+        f"Sankofa cache: ready at {cache_dir} snapshots={len(snapshot_paths)} "
+        f"deltas={max(0, len(snapshot_paths) - 1)} size={format_bytes(cache_bytes)} "
+        f"dt={format_seconds(time.perf_counter() - build_started)}"
+    )
+    progress_write(
+        f"Sankofa cache: final graph nodes={graph_node_count(current_graph):,} "
+        f"edges={graph_edge_count(current_graph):,}; manifest={manifest_path}"
+    )
 
     return SankofaDeltaCache(
         subgraph_dir=subgraph_dir,
