@@ -451,6 +451,7 @@ def main():
     progress_write("C++ Sankofa stream state initialized.")
 
     sankofa_rows = []
+    sankofa_summary_composition_rows = []
     triples_no = {}
     baseline_methods = list(DEFAULT_BASELINE_METHODS)
     baseline_engine = BaselineEngine(
@@ -502,7 +503,7 @@ def main():
             f"topk={top_k_count} walk={format_seconds(step_runtime)}; evaluating Sankofa summary..."
         )
 
-        sankofa_triples, sankofa_df = evaluate_sankofa_timestep(
+        sankofa_triples, sankofa_df, sankofa_summary_composition_df = evaluate_sankofa_timestep(
             t,
             evaluation_graph,
             top_k_nodes,
@@ -515,6 +516,7 @@ def main():
 
         triples_no[t] = sankofa_triples
         sankofa_rows.append(sankofa_df)
+        sankofa_summary_composition_rows.append(sankofa_summary_composition_df)
 
         progress_write(
             f"{step_label}: Sankofa summary complete triples={sankofa_triples}; moving to baselines..."
@@ -589,7 +591,9 @@ def main():
     #df_changes = pd.DataFrame(count_changes).sort_values(by="timestep")
 
     sankofa = pd.concat(sankofa_rows, ignore_index=True)
+    sankofa_summary_composition = pd.concat(sankofa_summary_composition_rows, ignore_index=True)
     sankofa.to_csv(output_path("sankofa_results.csv"), index=False)
+    sankofa_summary_composition.to_csv(output_path("sankofa_summary_composition.csv"), index=False)
     with output_path("changes_in_topk.json").open("w", encoding="utf-8") as f:
         json.dump(changes_in_topk, f, indent=4)
     df_changes.to_csv(output_path("changes_in_topk.csv"), index=False)
@@ -627,6 +631,7 @@ def main():
             "outputs": {
                 "queries": str(output_path("queries.json")),
                 "sankofa_results": str(output_path("sankofa_results.csv")),
+                "sankofa_summary_composition": str(output_path("sankofa_summary_composition.csv")),
                 "changes_in_topk_json": str(output_path("changes_in_topk.json")),
                 "changes_in_topk_csv": str(output_path("changes_in_topk.csv")),
                 "all_results": str(output_path("all_results.csv")) if not sota.empty else None,

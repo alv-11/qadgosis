@@ -66,6 +66,8 @@ def weighted_sampling(items, weights, k):
         return []
 
     k = min(k, n)
+    if k == n:
+        return list(items)
 
     keys = np.empty(n, dtype=float)
 
@@ -76,7 +78,7 @@ def weighted_sampling(items, weights, k):
             u = random.random()
             keys[i] = -math.log(u) / w
 
-    idx = np.argpartition(keys, k)[:k]
+    idx = np.argpartition(keys, k - 1)[:k]
     return [items[i] for i in idx]
 
 
@@ -95,10 +97,20 @@ class SummaryGraph(KnowledgeGraph):
 
         self.triple_count = 0
         self.triples_set = set()
+        self.internal_candidate_count = 0
+        self.boundary_candidate_count = 0
+        self.boundary_sampled_count = 0
+        self.random_candidate_count = 0
+        self.stage_counts = {
+            "internal": 0,
+            "boundary": 0,
+            "random": 0,
+        }
   
 
         # Reverse index restricted to top-k
         self.reverse_index = self._build_reverse_index_topk_only()
+        self.reverse_index_link_count = sum(len(pairs) for pairs in self.reverse_index.values())
 
         # Internal triples 
         self._topk_neighbors = self._compute_topk_internal_triples()
@@ -108,6 +120,7 @@ class SummaryGraph(KnowledgeGraph):
 
         remaining = max_triples - self.triple_count
         self.random_padding_order = weighted_sampling(cand, w, remaining)
+        self.boundary_sampled_count = len(self.random_padding_order)
         self.random_padding_index = 0
 
         self._build_summary()
@@ -128,6 +141,48 @@ class SummaryGraph(KnowledgeGraph):
             self.add_triple(triple)
             self.triples_set.add(triple)
             self.triple_count += 1
+
+    def _stage_percentage(self, stage_name):
+        if self.triple_count == 0:
+            return 0.0
+        return 100.0 * self.stage_counts[stage_name] / self.triple_count
+
+    def summary_overview(self):
+        return (
+            f"triples={self.triple_count} entities={self.number_of_entities()} "
+            f"topk_nodes={len(self.top_k_set)} reverse_index_targets={len(self.reverse_index)} "
+            f"reverse_index_links={self.reverse_index_link_count} "
+            f"internal={self.stage_counts['internal']}/{self.internal_candidate_count} "
+            f"({self._stage_percentage('internal'):.1f}%) "
+            f"boundary={self.stage_counts['boundary']}/{self.boundary_sampled_count} "
+            f"sampled_from={self.boundary_candidate_count} "
+            f"({self._stage_percentage('boundary'):.1f}%) "
+            f"random={self.stage_counts['random']}/{self.random_candidate_count} "
+            f"({self._stage_percentage('random'):.1f}%)"
+        )
+
+    def composition_stats(self, timestep=None):
+        stats = {
+            "Summary Triple Count": self.triple_count,
+            "Summary Entity Count": self.number_of_entities(),
+            "TopK Node Count": len(self.top_k_set),
+            "Summary Budget": self.max_triples,
+            "Reverse Index Target Count": len(self.reverse_index),
+            "Reverse Index Link Count": self.reverse_index_link_count,
+            "Internal Triple Count": self.stage_counts["internal"],
+            "Internal Candidate Triple Count": self.internal_candidate_count,
+            "Internal Triple Percentage": self._stage_percentage("internal"),
+            "Boundary Triple Count": self.stage_counts["boundary"],
+            "Boundary Candidate Triple Count": self.boundary_candidate_count,
+            "Boundary Sampled Triple Count": self.boundary_sampled_count,
+            "Boundary Triple Percentage": self._stage_percentage("boundary"),
+            "Random Triple Count": self.stage_counts["random"],
+            "Random Candidate Triple Count": self.random_candidate_count,
+            "Random Triple Percentage": self._stage_percentage("random"),
+        }
+        if timestep is not None:
+            stats = {"Timestep": int(timestep), **stats}
+        return stats
 
 
     # ---------------------------
@@ -177,6 +232,7 @@ class SummaryGraph(KnowledgeGraph):
 
    
         internal = list(internal)
+        self.internal_candidate_count = len(internal)
 
         # # If small, keep all
         if len(internal) <= budget:
@@ -228,6 +284,7 @@ class SummaryGraph(KnowledgeGraph):
                     candidates.append((e2, r, e1))
                     weights.append(w)
 
+        self.boundary_candidate_count = len(candidates)
 
         return candidates, weights
     
@@ -274,12 +331,14 @@ class SummaryGraph(KnowledgeGraph):
     # ---------------------------
 
     def _build_summary(self):
+        initial_triple_count = self.triple_count
 
         # 1. Add internal triples
         for score, triple in self._topk_neighbors:
             if self._limit_reached():
                 break
             self._try_add_triple(triple)
+        self.stage_counts["internal"] += self.triple_count - initial_triple_count
 
 
         # 2. Add boundary triples in batches
@@ -287,6 +346,7 @@ class SummaryGraph(KnowledgeGraph):
             added = self.add_related_random_triples_batch(self.batch_size)
             if not added:
                 break
+            self.stage_counts["boundary"] += added
 
 
         #print("Adding fallback triples...")
@@ -295,6 +355,7 @@ class SummaryGraph(KnowledgeGraph):
             fallback = self._fallback_add()
             if not fallback:
                 break
+            self.stage_counts["random"] += fallback
 
 
     # ---------------------------
@@ -307,7 +368,7 @@ class SummaryGraph(KnowledgeGraph):
         n = len(order)
 
         if idx >= n:
-            return False
+            return 0
 
         remaining = self.max_triples -  self.triple_count
         k = min(batch_size, remaining)
@@ -315,13 +376,13 @@ class SummaryGraph(KnowledgeGraph):
         end = min(idx + k, n)
         batch = order[idx:end]
 
-        added = False
+        added = 0
         for triple in batch:
             if self._limit_reached():
                 break
             if triple not in self.triples_set:
                 self._try_add_triple(triple)
-                added = True
+                added += 1
 
         self.random_padding_index = end
         return added
@@ -331,18 +392,29 @@ class SummaryGraph(KnowledgeGraph):
     def _fallback_add(self):
         remaining = self.max_triples - self.triple_count
         if remaining <= 0:
-            return
+            return 0
 
         cand, w = self._compute_fallback_candidates()
         if not cand:
-            return
+            return 0
+
+        self.random_candidate_count = max(self.random_candidate_count, len(cand))
 
         selected = weighted_sampling(cand, w, remaining)
+        added = 0
 
         for triple in selected:
             if self._limit_reached():
                 break
-            self._try_add_triple(triple)
+            if triple not in self.triples_set:
+                self._try_add_triple(triple)
+                added += 1
+
+        return added
+
+
+def _log_sankofa_summary(timestep, summary):
+    progress_write(f"Sankofa summary t={timestep}: {summary.summary_overview()}")
 
 
 
@@ -553,6 +625,7 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
         summary_runtime = t1 - t0
         summary_runtime_rows.append({"Timestep": key, "Runtime (summary)": summary_runtime})
         triples_no[key] = S.triple_count
+        _log_sankofa_summary(key, S)
 
 
         # PRESENT TEST F1
@@ -1103,6 +1176,7 @@ def process_summary_sankofa_streaming(
         })
 
         triples_no[key] = S.triple_count
+        _log_sankofa_summary(key, S)
 
         # -------- PRESENT TEST F1 --------
         log = test_data[key]
@@ -1204,6 +1278,7 @@ def evaluate_sankofa_timestep(
     started = time.time()
     summary = SummaryGraph(KG, top_k_nodes, non_top_k_nodes, max_triples)
     summary_runtime = time.time() - started
+    _log_sankofa_summary(timestep, summary)
 
     total_F1, _, _ = total_query_log_metrics(summary, test_data[timestep])
 
@@ -1227,8 +1302,9 @@ def evaluate_sankofa_timestep(
             "Weighted Future Test F1": weighted_future_f1,
         }
     ])
+    composition_row = pd.DataFrame([summary.composition_stats(timestep)])
 
-    return summary.triple_count, sankofa_row
+    return summary.triple_count, sankofa_row, composition_row
 
 
 class BaselineEngine:
