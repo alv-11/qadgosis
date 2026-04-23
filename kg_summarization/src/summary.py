@@ -1245,13 +1245,39 @@ class BaselineEngine:
 
         self.weighted_rows = {method_name: [] for method_name in self.methods}
 
-    def process_timestep(self, KG, t, K, training_data, test_data, weights, graph_delta=None):
+    def process_timestep(self, KG, t, K, training_data, test_data, weights, graph_delta=None, progress_prefix=None):
+
+        phase_started = time.perf_counter()
+
+        if progress_prefix is not None:
+            progress_write(f"{progress_prefix}: running baselines ({len(self.methods)} total)...")
 
         for method_name in self.methods:
+            method_started = time.perf_counter()
+            method_label = _baseline_label(method_name)
+
+            if progress_prefix is not None:
+                progress_write(f"{progress_prefix}: baseline {method_label} started")
+
             if method_name == "apex":
                 self._run_apex(method_name, KG, t, K, training_data, test_data, weights, graph_delta)
             else:
                 self._run_stateless_baseline(method_name, KG, t, K, training_data, test_data, weights)
+
+            runtime_seconds = self.present_rows[method_name][-1].get("Runtime (seconds)")
+            method_runtime = (
+                format_seconds(runtime_seconds)
+                if runtime_seconds is not None
+                else format_seconds(time.perf_counter() - method_started)
+            )
+
+            if progress_prefix is not None:
+                progress_write(f"{progress_prefix}: baseline {method_label} finished dt={method_runtime}")
+
+        if progress_prefix is not None:
+            progress_write(
+                f"{progress_prefix}: baselines complete in {format_seconds(time.perf_counter() - phase_started)}"
+            )
 
 
     def _run_stateless_baseline(self, method_name, KG, t, K, training_data, test_data, weights):

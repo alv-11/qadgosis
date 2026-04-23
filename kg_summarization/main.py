@@ -477,6 +477,9 @@ def main():
     )
     for t in stream_steps:
         has_next = t < total_timesteps - 1
+        step_label = f"{run_dir.name}: timestep {t + 1}/{total_timesteps}"
+
+        progress_write(f"{step_label}: running Sankofa stream update...")
 
         results = walks.process_one_timestep_delta(
             num_walks=DEFAULT_NUM_WALKS,
@@ -494,6 +497,11 @@ def main():
         top_k_nodes = results.get("top_k_cumsum_walks", {}).get(t, {})
         top_k_count = len(top_k_nodes)
 
+        progress_write(
+            f"{step_label}: Sankofa walks ready "
+            f"topk={top_k_count} walk={format_seconds(step_runtime)}; evaluating Sankofa summary..."
+        )
+
         sankofa_triples, sankofa_df = evaluate_sankofa_timestep(
             t,
             evaluation_graph,
@@ -508,6 +516,10 @@ def main():
         triples_no[t] = sankofa_triples
         sankofa_rows.append(sankofa_df)
 
+        progress_write(
+            f"{step_label}: Sankofa summary complete triples={sankofa_triples}; moving to baselines..."
+        )
+
         baseline_engine.process_timestep(
             KG=evaluation_graph,
             t=t,
@@ -516,6 +528,7 @@ def main():
             test_data=test_data,
             weights=results.get("all_weights", {}).get(t, {}),
             graph_delta=incoming_triple_delta,
+            progress_prefix=step_label,
         )
 
         if has_next:
@@ -541,7 +554,7 @@ def main():
 
         if live_progress_enabled():
             progress_write(
-                f"{run_dir.name}: timestep {t + 1}/{total_timesteps} "
+                f"{step_label} "
                 f"walk={format_seconds(step_runtime)} topk={top_k_count} triples={sankofa_triples}"
             )
 
