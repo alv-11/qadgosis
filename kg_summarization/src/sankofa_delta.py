@@ -159,19 +159,44 @@ def load_triple_delta(cache: SankofaDeltaCache, timestep: int) -> TripleDelta:
         return pickle.load(handle)
 
 
-def build_knowledge_graph(snapshot_triples: SnapshotTriples) -> KnowledgeGraph:
+def build_knowledge_graph(snapshot_triples: SnapshotTriples, *, progress_label: str | None = None) -> KnowledgeGraph:
     graph = KnowledgeGraph()
-    for triple in snapshot_triples:
+    total_triples = len(snapshot_triples)
+    started = time.perf_counter()
+    report_every = max(10_000, total_triples // 20) if total_triples > 0 else 1
+
+    if progress_label is not None:
+        progress_write(f"{progress_label}: loading {total_triples:,} triples into evaluation graph...")
+
+    for index, triple in enumerate(snapshot_triples, start=1):
         graph.add_triple(triple)
+
+        if (
+            progress_label is not None
+            and index < total_triples
+            and index % report_every == 0
+        ):
+            progress_write(
+                f"{progress_label}: loaded {index:,}/{total_triples:,} triples "
+                f"({index / total_triples:.0%}) in {format_seconds(time.perf_counter() - started)}"
+            )
+
+    if progress_label is not None:
+        progress_write(
+            f"{progress_label}: ready with {graph.number_of_entities():,} entities, "
+            f"{graph.number_of_relationships():,} relations, {graph.number_of_triples():,} triples "
+            f"in {format_seconds(time.perf_counter() - started)}"
+        )
+
     return graph
 
 
-def load_cached_snapshot_kg(cache: SankofaDeltaCache, timestep: int) -> KnowledgeGraph:
-    return build_knowledge_graph(load_snapshot_triples(cache, timestep))
+def load_cached_snapshot_kg(cache: SankofaDeltaCache, timestep: int, *, progress_label: str | None = None) -> KnowledgeGraph:
+    return build_knowledge_graph(load_snapshot_triples(cache, timestep), progress_label=progress_label)
 
 
-def initialize_streamed_evaluation_graph(cache: SankofaDeltaCache) -> KnowledgeGraph:
-    return load_cached_snapshot_kg(cache, 0)
+def initialize_streamed_evaluation_graph(cache: SankofaDeltaCache, *, progress_label: str | None = None) -> KnowledgeGraph:
+    return load_cached_snapshot_kg(cache, 0, progress_label=progress_label)
 
 
 def apply_triple_delta_to_knowledge_graph(graph: KnowledgeGraph, delta: TripleDelta) -> bool:

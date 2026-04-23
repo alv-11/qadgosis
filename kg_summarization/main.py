@@ -411,15 +411,21 @@ def main():
 
     total_timesteps = len(snapshot_files)
 
+    progress_write(f"Preparing Sankofa cache for {subgraph_dir}...")
     cache = ensure_sankofa_delta_cache(subgraph_dir)
     if list(cache.snapshot_files) != list(snapshot_files):
         raise ValueError("Sankofa cache snapshot order does not match query preparation order.")
+    progress_write(f"Sankofa cache ready at {cache.cache_dir}.")
 
+    progress_write("Encoding query seeds for C++ streaming...")
     converted_queries = {
         int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
         for timestep, query_list in queries_.items()
     }
+    progress_write(f"Prepared query map for {len(converted_queries)} timesteps.")
 
+    initial_graph_started = time.perf_counter()
+    progress_write(f"Loading initial walk graph from {cache.initial_graph_path}...")
     initial_graph = load_initial_graph(cache)
     results = None
 
@@ -427,6 +433,10 @@ def main():
     initial_node_count = graph_node_count(initial_graph)
     if initial_edge_count == 0:
         raise ValueError("Initial Sankofa graph has no edges.")
+    progress_write(
+        f"Initial walk graph ready with {initial_node_count:,} nodes and {initial_edge_count:,} edges "
+        f"in {format_seconds(time.perf_counter() - initial_graph_started)}."
+    )
 
     b = DEFAULT_BUDGET_RATIO
     summary_size = compute_summary_size(initial_edge_count, b)
@@ -435,9 +445,10 @@ def main():
 
     progress_write(f"Summary triple size: {summary_size}")
 
-    progress_write("Streaming snapshots into C++ and evaluating each timestep...")
+    progress_write("Initializing C++ Sankofa stream state...")
     walks.reset_stream_state()
     walks.initialize_stream_graph(initial_graph)
+    progress_write("C++ Sankofa stream state initialized.")
 
     sankofa_rows = []
     triples_no = {}
@@ -445,8 +456,15 @@ def main():
     baseline_engine = BaselineEngine(
         methods=baseline_methods  # e.g. ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing", "ppr_frequency"]
     )
-    evaluation_graph = initialize_streamed_evaluation_graph(cache)
+    progress_write("Loading evaluation graph for timestep 0...")
+    evaluation_graph = initialize_streamed_evaluation_graph(
+        cache,
+        progress_label=f"{run_dir.name}: evaluation graph",
+    )
+    progress_write("Evaluation graph initialization complete.")
     incoming_triple_delta = None
+
+    progress_write("Streaming snapshots into C++ and evaluating each timestep...")
 
     # ==========================================================
     # PHASE 1 — STREAM INTO C++ (INCREMENTAL SANKOFA ENGINE)
@@ -501,8 +519,17 @@ def main():
         )
 
         if has_next:
+            evaluation_delta_started = time.perf_counter()
             outgoing_triple_delta = load_triple_delta(cache, t)
-            apply_triple_delta_to_knowledge_graph(evaluation_graph, outgoing_triple_delta)
+            removed_count = len(outgoing_triple_delta.get("triples_removed", []))
+            added_count = len(outgoing_triple_delta.get("triples_added", []))
+            changed = apply_triple_delta_to_knowledge_graph(evaluation_graph, outgoing_triple_delta)
+            progress_write(
+                f"{run_dir.name}: evaluation graph advanced {t}->{t + 1} "
+                f"removed={removed_count} added={added_count} changed={changed} "
+                f"triples={evaluation_graph.number_of_triples():,} "
+                f"dt={format_seconds(time.perf_counter() - evaluation_delta_started)}"
+            )
             incoming_triple_delta = outgoing_triple_delta
 
         stream_steps.set_postfix(
