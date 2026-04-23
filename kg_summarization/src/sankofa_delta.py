@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import gzip
 import hashlib
 import json
@@ -17,6 +19,7 @@ from src.progress import format_bytes, format_seconds, progress, progress_write
 EDGE_WEIGHT = 0.01
 CACHE_VERSION = 3
 CACHE_DIR_NAME = ".sankofa_cache"
+CACHE_LOCK_FILE_NAME = ".sankofa_cache.lock"
 MANIFEST_FILE = "manifest.json"
 INITIAL_GRAPH_FILE = "initial_graph.pkl"
 DELTAS_DIR_NAME = "deltas"
@@ -115,28 +118,29 @@ def ensure_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fals
         raise ValueError(f"No snapshot_*.nt.gz files found in {subgraph_path}")
 
     cache_dir = resolve_cache_dir(subgraph_path)
-    manifest = _load_manifest(cache_dir)
-    needs_rebuild = rebuild or not _cache_is_valid(cache_dir, manifest, subgraph_path, snapshot_files)
+    with _cache_build_lock(subgraph_path, verbose=verbose):
+        manifest = _load_manifest(cache_dir)
+        needs_rebuild = rebuild or not _cache_is_valid(cache_dir, manifest, subgraph_path, snapshot_files)
 
-    if needs_rebuild:
+        if needs_rebuild:
+            if verbose:
+                reason = "rebuild requested" if rebuild else "cache missing or out of date"
+                progress_write(
+                    f"Sankofa cache: generating new cache at {cache_dir} "
+                    f"({reason}; walk deltas + evaluation snapshots)."
+                )
+            return _build_sankofa_delta_cache(subgraph_path, snapshot_files)
+
         if verbose:
-            reason = "rebuild requested" if rebuild else "cache missing or out of date"
-            progress_write(
-                f"Sankofa cache: generating new cache at {cache_dir} "
-                f"({reason}; walk deltas + evaluation snapshots)."
-            )
-        return _build_sankofa_delta_cache(subgraph_path, snapshot_files)
+            progress_write(f"Sankofa cache: using preexisting cache at {cache_dir} (walk deltas + evaluation snapshots).")
 
-    if verbose:
-        progress_write(f"Sankofa cache: using preexisting cache at {cache_dir} (walk deltas + evaluation snapshots).")
-
-    return SankofaDeltaCache(
-        subgraph_dir=subgraph_path,
-        cache_dir=cache_dir,
-        snapshot_files=tuple(snapshot_files),
-        manifest=manifest,
-        cache_status=REUSED_CACHE_STATUS,
-    )
+        return SankofaDeltaCache(
+            subgraph_dir=subgraph_path,
+            cache_dir=cache_dir,
+            snapshot_files=tuple(snapshot_files),
+            manifest=manifest,
+            cache_status=REUSED_CACHE_STATUS,
+        )
 
 
 def load_initial_graph(cache: SankofaDeltaCache) -> Graph:
@@ -283,6 +287,30 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
         "cache_dir": str(cache.cache_dir),
         "cache_status": cache.cache_status,
     }
+
+
+@contextlib.contextmanager
+def _cache_build_lock(subgraph_dir: Path, *, verbose: bool):
+    lock_path = subgraph_dir / CACHE_LOCK_FILE_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with lock_path.open("a+", encoding="utf-8") as lock_handle:
+        waiting_logged = False
+        while True:
+            try:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if verbose and not waiting_logged:
+                    progress_write(f"Sankofa cache: waiting for cache build lock at {lock_path}...")
+                    waiting_logged = True
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+                break
+
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) -> SankofaDeltaCache:

@@ -22,7 +22,7 @@ DEFAULT_EPSILON = 0.25
 DEFAULT_DECAY_RATE = 0.03
 DEFAULT_WINDOW_SIZE = 5
 DEFAULT_BUDGET_RATIO = 0.005
-DEFAULT_BASELINE_METHODS = ["hhop_random", "hhop_random_outgoing", "ppr_frequency"]
+DEFAULT_BASELINE_METHODS = ["hhop_random", "hhop_random_outgoing"]#, "ppr_frequency"]
 
 
 def compute_summary_size(edge_count, budget_ratio, floor=MIN_SUMMARY_SIZE):

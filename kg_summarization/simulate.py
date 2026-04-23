@@ -81,6 +81,49 @@ def resolve_live_output_mode():
     return mode
 
 
+class LiveOutputController:
+
+    def __init__(self, mode):
+        self.mode = mode
+        self._lock = threading.Lock()
+        self._active_run_index = None
+
+    def register_run(self, run_index):
+        if self.mode != "first":
+            return False
+
+        with self._lock:
+            if self._active_run_index is None:
+                self._active_run_index = run_index
+                return True
+
+        return False
+
+    def should_echo(self, run_index):
+        if self.mode == "all":
+            return True
+        if self.mode != "first":
+            return False
+
+        with self._lock:
+            return self._active_run_index == run_index
+
+    def is_active(self, run_index):
+        with self._lock:
+            return self._active_run_index == run_index
+
+    def handoff(self, finished_run_index, remaining_run_indices):
+        if self.mode != "first":
+            return None
+
+        with self._lock:
+            if self._active_run_index != finished_run_index:
+                return None
+
+            self._active_run_index = min(remaining_run_indices) if remaining_run_indices else None
+            return self._active_run_index
+
+
 def dataset_label(subgraph_dir):
     name = subgraph_dir.name.strip()
     return name or "dataset"
@@ -127,6 +170,25 @@ def estimate_graph_size_bytes(subgraph_dir):
     return total_bytes, file_count
 
 
+def read_meminfo_bytes():
+    meminfo_path = Path("/proc/meminfo")
+    if not meminfo_path.exists():
+        return None
+
+    values = {}
+    try:
+        for line in meminfo_path.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            key = parts[0].rstrip(":")
+            values[key] = int(parts[1]) * 1024
+    except (OSError, ValueError):
+        return None
+
+    return values
+
+
 def detect_total_memory_bytes():
     try:
         page_size = os.sysconf("SC_PAGE_SIZE")
@@ -136,17 +198,57 @@ def detect_total_memory_bytes():
     except (AttributeError, ValueError, OSError):
         pass
 
-    meminfo_path = Path("/proc/meminfo")
-    if meminfo_path.exists():
-        try:
-            for line in meminfo_path.read_text(encoding="utf-8").splitlines():
-                if line.startswith("MemTotal:"):
-                    parts = line.split()
-                    return int(parts[1]) * 1024
-        except OSError:
-            return None
+    meminfo = read_meminfo_bytes()
+    if meminfo is not None:
+        return meminfo.get("MemTotal")
 
     return None
+
+
+def detect_available_memory_bytes():
+    meminfo = read_meminfo_bytes()
+    if meminfo is None:
+        return None
+
+    if "MemAvailable" in meminfo:
+        return meminfo["MemAvailable"]
+
+    fallback_keys = ("MemFree", "Buffers", "Cached", "SReclaimable")
+    if all(key in meminfo for key in fallback_keys):
+        shmem = meminfo.get("Shmem", 0)
+        return sum(meminfo[key] for key in fallback_keys) - shmem
+
+    return None
+
+
+def can_start_worker_now(parallel_info, active_run_count):
+    available_memory_bytes = detect_available_memory_bytes()
+    estimated_per_run_bytes = parallel_info["estimated_per_run_bytes"]
+    launch_buffer_bytes = parallel_info["launch_buffer_bytes"]
+
+    if available_memory_bytes is None:
+        return True, {
+            "available_memory_bytes": None,
+            "required_available_bytes": parallel_info["min_available_to_start_bytes"],
+            "projected_active_runs": active_run_count + 1,
+            "reason": "memory probe unavailable",
+        }
+
+    required_available_bytes = estimated_per_run_bytes + launch_buffer_bytes
+    if available_memory_bytes >= required_available_bytes:
+        return True, {
+            "available_memory_bytes": available_memory_bytes,
+            "required_available_bytes": required_available_bytes,
+            "projected_active_runs": active_run_count + 1,
+            "reason": "sufficient headroom",
+        }
+
+    return False, {
+        "available_memory_bytes": available_memory_bytes,
+        "required_available_bytes": required_available_bytes,
+        "projected_active_runs": active_run_count + 1,
+        "reason": "available memory below launch threshold",
+    }
 
 
 def choose_parallel_workers(num_runs, subgraph_dir):
@@ -154,7 +256,8 @@ def choose_parallel_workers(num_runs, subgraph_dir):
     total_memory_bytes = detect_total_memory_bytes()
     safe_memory_budget = int(total_memory_bytes * 0.35) if total_memory_bytes is not None else None
     estimated_per_run_bytes = max(2 * GIB, (graph_bytes or 0) * 10)
-    cpu_cap = max(1, min(4, os.cpu_count() or 1))
+    launch_buffer_bytes = max(1 * GIB, estimated_per_run_bytes // 2)
+    cpu_cap = max(1, min(10, os.cpu_count() or 1))
 
     if safe_memory_budget is None:
         memory_cap = 1
@@ -172,6 +275,8 @@ def choose_parallel_workers(num_runs, subgraph_dir):
         "total_memory_bytes": total_memory_bytes,
         "safe_memory_budget_bytes": safe_memory_budget,
         "estimated_per_run_bytes": estimated_per_run_bytes,
+        "launch_buffer_bytes": launch_buffer_bytes,
+        "min_available_to_start_bytes": estimated_per_run_bytes + launch_buffer_bytes,
         "cpu_cap": cpu_cap,
         "conservative_parallel_limit": conservative_limit,
         "user_parallel_cap": user_cap,
@@ -210,15 +315,11 @@ def build_run_spec(batch_dir, run_index):
     }
 
 
-def should_live_stream_run(run_index, live_output_mode):
-    if live_output_mode == "all":
-        return True
-    if live_output_mode == "first":
-        return run_index == 1
-    return False
+def should_pipe_run_output(live_output_mode):
+    return live_output_mode != "none"
 
 
-def _stream_child_output(spec):
+def _stream_child_output(spec, live_output_controller):
     stdout = spec.get("stdout_pipe")
     log_handle = spec["log_handle"]
     if stdout is None:
@@ -230,7 +331,7 @@ def _stream_child_output(spec):
             log_handle.write(line)
             log_handle.flush()
             text = line.rstrip()
-            if text:
+            if text and live_output_controller.should_echo(spec["run_index"]):
                 progress_write(f"{prefix} {text}")
     finally:
         stdout.close()
@@ -349,6 +450,10 @@ def main():
             "safe_memory_budget_human": format_bytes_human(parallel_info["safe_memory_budget_bytes"]),
             "estimated_per_run_bytes": parallel_info["estimated_per_run_bytes"],
             "estimated_per_run_human": format_bytes_human(parallel_info["estimated_per_run_bytes"]),
+            "launch_buffer_bytes": parallel_info["launch_buffer_bytes"],
+            "launch_buffer_human": format_bytes_human(parallel_info["launch_buffer_bytes"]),
+            "min_available_to_start_bytes": parallel_info["min_available_to_start_bytes"],
+            "min_available_to_start_human": format_bytes_human(parallel_info["min_available_to_start_bytes"]),
             "cpu_cap": parallel_info["cpu_cap"],
             "user_parallel_cap": parallel_info["user_parallel_cap"],
         },
@@ -367,6 +472,7 @@ def main():
     active = []
     completed = []
     live_output_mode = resolve_live_output_mode()
+    live_output_controller = LiveOutputController(live_output_mode)
 
     child_env = os.environ.copy()
     child_env["QADGOSIS_SUBGRAPH_DIR"] = str(subgraph_dir)
@@ -374,19 +480,33 @@ def main():
     run_steps = progress(range(num_runs), desc="Simulation runs", unit="run")
     success_count = 0
     failure_count = 0
+    last_memory_gate_log_at = 0.0
 
     while pending or active:
         while pending and len(active) < parallel_workers:
+            can_start_now, memory_status = can_start_worker_now(parallel_info, len(active))
+            if not can_start_now:
+                now = time.perf_counter()
+                if now - last_memory_gate_log_at >= 5.0:
+                    progress_write(
+                        "Delaying next run start: "
+                        f"available={format_bytes_human(memory_status['available_memory_bytes'])} "
+                        f"required={format_bytes_human(memory_status['required_available_bytes'])} "
+                        f"projected_active={memory_status['projected_active_runs']}"
+                    )
+                    last_memory_gate_log_at = now
+                break
+
             spec = pending.pop(0)
             spec["run_dir"].mkdir(parents=True, exist_ok=True)
             spec["started_perf"] = time.perf_counter()
             spec["started_at"] = utc_now_iso()
-            spec["live_output"] = should_live_stream_run(spec["run_index"], live_output_mode)
+            spec["pipe_output"] = should_pipe_run_output(live_output_mode)
             log_handle = spec["log_path"].open("w", encoding="utf-8")
             spec["log_handle"] = log_handle
             child_env_for_run = dict(child_env)
 
-            if spec["live_output"]:
+            if spec["pipe_output"]:
                 child_env_for_run["QADGOSIS_LIVE_RUN_PROGRESS"] = "1"
                 child_env_for_run["PYTHONUNBUFFERED"] = "1"
                 spec["process"] = subprocess.Popen(
@@ -399,9 +519,11 @@ def main():
                     bufsize=1,
                 )
                 spec["stdout_pipe"] = spec["process"].stdout
+                if live_output_controller.register_run(spec["run_index"]):
+                    progress_write(f"Showing live output from run {spec['run_index']}.")
                 spec["stream_thread"] = threading.Thread(
                     target=_stream_child_output,
-                    args=(spec,),
+                    args=(spec, live_output_controller),
                     daemon=True,
                 )
                 spec["stream_thread"].start()
@@ -426,9 +548,19 @@ def main():
                 remaining.append(spec)
                 continue
 
+            was_live_run = live_output_controller.is_active(spec["run_index"])
             if spec.get("stream_thread") is not None:
                 spec["stream_thread"].join(timeout=2.0)
             spec["log_handle"].close()
+
+            if was_live_run:
+                next_live_run = live_output_controller.handoff(
+                    spec["run_index"],
+                    [candidate["run_index"] for candidate in remaining],
+                )
+                if next_live_run is not None:
+                    progress_write(f"Showing live output from run {next_live_run}.")
+
             record = finalize_run_record(spec, exit_code)
             completed.append(record)
             completed_this_tick.append(record)
