@@ -3,6 +3,7 @@ import time
 import random
 import numpy as np
 import math
+import hashlib
 from src.base import KnowledgeGraph
 import os
 import time
@@ -20,6 +21,7 @@ import json
 import pickle
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 
 from src.progress import format_seconds, progress, progress_write
 
@@ -1441,18 +1443,20 @@ class BaselineEngine:
 ################################################################################################################################################
 import random
 
-def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4):
+def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4, rng=None):
     """
     Fixed number of topics per timestep.
     40% change, 60% persist.
     Only keeps topics valid in current graph.
     """
 
+    rng = random if rng is None else rng
+
     all_nodes = list(graph.triples_.keys())
 
     # First timestep
     if prev_topics is None:
-        return random.sample(all_nodes, k=min(K, len(all_nodes)))
+        return rng.sample(all_nodes, k=min(K, len(all_nodes)))
 
     # Keep only topics still in graph
     valid_prev = [t for t in prev_topics if t in graph.triples_]
@@ -1461,14 +1465,14 @@ def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4):
     num_keep_target = int((1 - change_ratio) * K)
     num_keep = min(num_keep_target, len(valid_prev))
 
-    kept = random.sample(valid_prev, k=num_keep) if num_keep > 0 else []
+    kept = rng.sample(valid_prev, k=num_keep) if num_keep > 0 else []
 
     # Fill remaining with new topics
     num_new = K - len(kept)
     candidates = list(set(all_nodes) - set(kept))
 
     if len(candidates) >= num_new:
-        new_topics = random.sample(candidates, k=num_new)
+        new_topics = rng.sample(candidates, k=num_new)
     else:
         new_topics = candidates
 
@@ -1479,7 +1483,7 @@ def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4):
         extra_needed = K - len(topics)
         extra_candidates = list(set(all_nodes) - set(topics))
         if extra_candidates:
-            topics += random.sample(
+            topics += rng.sample(
                 extra_candidates,
                 k=min(extra_needed, len(extra_candidates))
             )
@@ -1649,109 +1653,170 @@ def _next_query_bundle_id(subgraph_dir, settings):
     return max_bundle_id + 1
 
 
+def _bundle_rngs(settings, bundle_id, snapshot_files):
+    seed_material = json.dumps(
+        {
+            "bundle_id": bundle_id,
+            "settings": settings,
+            "snapshot_files": list(snapshot_files),
+        },
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(seed_material.encode("utf-8")).digest()
+    python_seed = int.from_bytes(digest[:8], "big", signed=False)
+    numpy_seed = int.from_bytes(digest[8:12], "big", signed=False)
+    return random.Random(python_seed), np.random.RandomState(numpy_seed)
+
+
 def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id, *, replace_existing=False):
+    return _generate_query_bundles(
+        subgraph_dir,
+        snapshot_files,
+        settings,
+        [bundle_id],
+        replace_existing=replace_existing,
+    )[bundle_id]
+
+
+def _generate_query_bundles(subgraph_dir, snapshot_files, settings, bundle_ids, *, replace_existing=False):
     bundle_started = time.perf_counter()
     bundle_root = _query_bundle_root(subgraph_dir)
     bundle_root.mkdir(parents=True, exist_ok=True)
 
-    bundle_name = _query_bundle_name(settings, bundle_id)
-    bundle_dir = _query_bundle_dir(subgraph_dir, settings, bundle_id)
-
-    if replace_existing and bundle_dir.exists():
-        if bundle_dir.is_dir():
-            shutil.rmtree(bundle_dir)
-        else:
-            bundle_dir.unlink()
-
-    bundle_dir.mkdir(parents=True, exist_ok=False)
-
-    prev_topics = None
+    requested_bundle_ids = sorted(set(bundle_ids))
+    bundle_states = {}
     snapshot_paths = [Path(subgraph_dir) / file_name for file_name in snapshot_files]
-    total_queries = 0
+
+    for bundle_id in requested_bundle_ids:
+        bundle_name = _query_bundle_name(settings, bundle_id)
+        bundle_dir = _query_bundle_dir(subgraph_dir, settings, bundle_id)
+
+        if replace_existing and bundle_dir.exists():
+            if bundle_dir.is_dir():
+                shutil.rmtree(bundle_dir)
+            else:
+                bundle_dir.unlink()
+
+        bundle_dir.mkdir(parents=True, exist_ok=False)
+        rng, np_rng = _bundle_rngs(settings, bundle_id, snapshot_files)
+        bundle_states[bundle_id] = {
+            "bundle_id": bundle_id,
+            "bundle_name": bundle_name,
+            "bundle_dir": bundle_dir,
+            "prev_topics": None,
+            "total_queries": 0,
+            "rng": rng,
+            "np_rng": np_rng,
+        }
 
     progress_write(
-        f"Query logs: generating stored bundle {bundle_name} in {bundle_dir} "
+        f"Query logs: generating stored bundle(s) {requested_bundle_ids} under {bundle_root} "
         f"for {len(snapshot_paths)} snapshots (settings={_query_bundle_prefix(settings)})."
     )
 
     bundle_steps = progress(
         enumerate(snapshot_paths),
         total=len(snapshot_paths),
-        desc=f"Generating query bundle {bundle_name}",
+        desc="Generating query bundles",
         unit="snapshot",
         leave=False,
     )
-    for timestep, snapshot_path in bundle_steps:
-        started = time.perf_counter()
-        kg_load_started = time.perf_counter()
-        KG = DBPedia(rdf_gz=str(snapshot_path))
-        KG.load()
-        kg_load_seconds = time.perf_counter() - kg_load_started
 
-        current_topics = update_topics_fixed(
-            prev_topics,
-            KG,
-            K=settings["topic_count"],
-            change_ratio=settings["topic_change_ratio"],
+    max_workers = max(1, min(len(bundle_states), os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for timestep, snapshot_path in bundle_steps:
+            started = time.perf_counter()
+            kg_load_started = time.perf_counter()
+            KG = DBPedia(rdf_gz=str(snapshot_path))
+            KG.load()
+            kg_load_seconds = time.perf_counter() - kg_load_started
+
+            bundle_futures = []
+            for bundle_id, state in bundle_states.items():
+                current_topics = update_topics_fixed(
+                    state["prev_topics"],
+                    KG,
+                    K=settings["topic_count"],
+                    change_ratio=settings["topic_change_ratio"],
+                    rng=state["rng"],
+                )
+                state["prev_topics"] = current_topics
+                future = executor.submit(
+                    generate_query_logs,
+                    KG,
+                    timestep,
+                    current_topics,
+                    num_queries=settings["num_queries"],
+                    shuffle=settings["shuffle"],
+                    random_query_prob=settings["random_query_prob"],
+                    rng=state["rng"],
+                    np_rng=state["np_rng"],
+                )
+                bundle_futures.append((bundle_id, current_topics, future))
+
+            timestep_queries = 0
+            timestep_topics = 0
+            for bundle_id, current_topics, future in bundle_futures:
+                query_log = future.result()
+                query_count = len(query_log) if query_log else 0
+                timestep_queries += query_count
+                timestep_topics += len(current_topics)
+
+                state = bundle_states[bundle_id]
+                state["total_queries"] += query_count
+                with _query_log_path(state["bundle_dir"], timestep).open("wb") as handle:
+                    pickle.dump(query_log, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+            bundle_steps.set_postfix(
+                snapshot=snapshot_path.name,
+                dt=format_seconds(time.perf_counter() - started),
+                load=format_seconds(kg_load_seconds),
+                bundles=len(bundle_states),
+                topics=timestep_topics,
+                queries=timestep_queries,
+            )
+            del KG
+
+    snapshot_metadata = [_snapshot_metadata(path) for path in snapshot_paths]
+    generated = {}
+    for bundle_id, state in bundle_states.items():
+        metadata = {
+            "bundle_id": bundle_id,
+            "bundle_name": state["bundle_name"],
+            "generation_settings": settings,
+            "snapshot_files": snapshot_metadata,
+            "query_log_count": len(snapshot_paths),
+        }
+
+        with _query_bundle_metadata_path(state["bundle_dir"]).open("w", encoding="utf-8") as handle:
+            json.dump(metadata, handle, indent=2)
+
+        progress_write(
+            f"Query logs: bundle {state['bundle_name']} ready snapshots={len(snapshot_paths)} "
+            f"queries={state['total_queries']:,} dt={format_seconds(time.perf_counter() - bundle_started)}"
         )
-        prev_topics = current_topics
+        generated[bundle_id] = {
+            "bundle_id": bundle_id,
+            "bundle_name": state["bundle_name"],
+            "bundle_dir": state["bundle_dir"],
+            "status": "generated",
+        }
 
-        query_log = generate_query_logs(
-            KG,
-            timestep,
-            current_topics,
-            num_queries=settings["num_queries"],
-            shuffle=settings["shuffle"],
-            random_query_prob=settings["random_query_prob"],
-        )
-
-        query_count = len(query_log) if query_log else 0
-        total_queries += query_count
-
-        with _query_log_path(bundle_dir, timestep).open("wb") as handle:
-            pickle.dump(query_log, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        bundle_steps.set_postfix(
-            snapshot=snapshot_path.name,
-            dt=format_seconds(time.perf_counter() - started),
-            load=format_seconds(kg_load_seconds),
-            topics=len(current_topics),
-            queries=query_count,
-        )
-        del KG
-
-    metadata = {
-        "bundle_id": bundle_id,
-        "bundle_name": bundle_name,
-        "generation_settings": settings,
-        "snapshot_files": [_snapshot_metadata(path) for path in snapshot_paths],
-        "query_log_count": len(snapshot_paths),
-    }
-
-    with _query_bundle_metadata_path(bundle_dir).open("w", encoding="utf-8") as handle:
-        json.dump(metadata, handle, indent=2)
-
-    progress_write(
-        f"Query logs: bundle {bundle_name} ready snapshots={len(snapshot_paths)} "
-        f"queries={total_queries:,} dt={format_seconds(time.perf_counter() - bundle_started)}"
-    )
-
-    return {
-        "bundle_id": bundle_id,
-        "bundle_name": bundle_name,
-        "bundle_dir": bundle_dir,
-        "status": "generated",
-    }
+    return generated
 
 
-def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
+def _ensure_query_bundles(subgraph_dir, snapshot_files, query_bundle_indices=None):
     settings = _query_generation_settings()
-    if query_bundle_index is not None and query_bundle_index < 1:
-        raise ValueError("query_bundle_index must be >= 1")
+    if query_bundle_indices is None:
+        target_indices = [1]
+    else:
+        target_indices = sorted(set(query_bundle_indices))
+        if any(query_bundle_index < 1 for query_bundle_index in target_indices):
+            raise ValueError("query_bundle_index must be >= 1")
 
-    target_index = 1 if query_bundle_index is None else query_bundle_index
     bundle_root = _query_bundle_root(subgraph_dir)
     progress_write(
-        f"Query logs: resolving bundle {target_index} under {bundle_root} "
+        f"Query logs: resolving bundle(s) {target_indices} under {bundle_root} "
         f"for {len(snapshot_files)} snapshots (settings={_query_bundle_prefix(settings)})."
     )
     matches = _find_matching_query_bundles(subgraph_dir, settings, snapshot_files)
@@ -1766,31 +1831,46 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
     else:
         progress_write("Query logs: no matching stored bundles found.")
 
-    if target_index not in matches_by_id:
+    missing_ids = []
+    for target_index in target_indices:
+        if target_index in matches_by_id:
+            continue
+
         bundle_dir = _query_bundle_dir(subgraph_dir, settings, target_index)
         bundle_state = "stale existing" if bundle_dir.exists() else "missing"
         progress_write(
             f"Query logs: requested bundle {target_index} is {bundle_state}; "
-            f"generating exact bundle id {target_index}."
+            f"queued for exact regeneration."
+        )
+        missing_ids.append(target_index)
+
+    if missing_ids:
+        matches_by_id.update(
+            _generate_query_bundles(
+                subgraph_dir,
+                snapshot_files,
+                settings,
+                missing_ids,
+                replace_existing=True,
+            )
         )
 
-        next_bundle = _generate_query_bundle(
-            subgraph_dir,
-            snapshot_files,
-            settings,
-            target_index,
-            replace_existing=True,
-        )
-        matches_by_id[target_index] = next_bundle
-
-    selected = matches_by_id[target_index]
-    if selected["status"] == "reused":
+    selected_bundles = [matches_by_id[target_index] for target_index in target_indices]
+    reused_bundles = [bundle for bundle in selected_bundles if bundle["status"] == "reused"]
+    if reused_bundles:
         progress_write(
-            f"Query logs: using stored bundle {selected['bundle_name']} "
-            f"from {selected['bundle_dir']}."
+            f"Query logs: using stored bundle(s) {[bundle['bundle_name'] for bundle in reused_bundles]}."
         )
 
-    return selected
+    return selected_bundles
+
+
+def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
+    return _ensure_query_bundles(
+        subgraph_dir,
+        snapshot_files,
+        query_bundle_indices=None if query_bundle_index is None else [query_bundle_index],
+    )[0]
 
 
 def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
@@ -1827,7 +1907,8 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
     return training_data, test_data, queries_
 
 
-def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle=True, random_query_prob=0):
+def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle=True,
+    random_query_prob=0, rng=None, np_rng=None):
     """Generate query logs using given topics."""
 
     valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
@@ -1842,7 +1923,9 @@ def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle
         num_queries,
         topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
         shuffle=shuffle,
-        random_query_prob=random_query_prob
+        random_query_prob=random_query_prob,
+        rng=rng,
+        np_rng=np_rng,
     )
 
     return query_log
@@ -1908,3 +1991,25 @@ def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None):
     )
 
     return training_data, test_data, queries_, snapshot_files
+
+
+def prepare_query_bundles(subgraph_dir, query_bundle_indices):
+    files = os.listdir(subgraph_dir)
+    snapshot_files = sorted(
+        [f for f in files if f.startswith("snapshot_") and f.endswith(".nt.gz")],
+        key=extract_snapshot_number
+    )
+
+    if not snapshot_files:
+        raise ValueError(f"No snapshot_*.nt.gz files found in {subgraph_dir}")
+
+    selected_bundles = _ensure_query_bundles(
+        subgraph_dir,
+        snapshot_files,
+        query_bundle_indices=query_bundle_indices,
+    )
+    progress_write(
+        f"Prepared query bundle(s) {[bundle['bundle_name'] for bundle in selected_bundles]}."
+    )
+
+    return selected_bundles, snapshot_files

@@ -22,7 +22,7 @@ import pandas as pd
 
 from src.progress import format_seconds, progress, progress_write
 from src.sankofa_delta import ensure_sankofa_delta_cache
-from src.summary import prepare_queries_and_splits
+from src.summary import prepare_query_bundles
 
 
 DEFAULT_SUBGRAPH_DIR = "/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"
@@ -287,17 +287,15 @@ def prewarm_runtime_artifacts(subgraph_dir, num_runs):
     progress_write(f"Prewarming Sankofa cache for {subgraph_dir}...")
     cache = ensure_sankofa_delta_cache(subgraph_dir, verbose=True)
 
-    bundle_steps = progress(
-        range(1, num_runs + 1),
-        desc="Preparing query bundles",
-        unit="bundle",
+    bundle_indices = list(range(1, num_runs + 1))
+    prepared_bundles, snapshot_files = prepare_query_bundles(
+        subgraph_dir,
+        query_bundle_indices=bundle_indices,
     )
-    for bundle_index in bundle_steps:
-        _training_data, _test_data, _queries, snapshot_files = prepare_queries_and_splits(
-            subgraph_dir,
-            query_bundle_index=bundle_index,
-        )
-        bundle_steps.set_postfix(bundle=bundle_index, timesteps=len(snapshot_files))
+    progress_write(
+        f"Prewarmed query bundles {bundle_indices} across {len(snapshot_files)} timesteps "
+        f"({len(prepared_bundles)} bundle(s))."
+    )
 
     return cache
 
