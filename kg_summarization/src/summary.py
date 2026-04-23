@@ -19,6 +19,7 @@ from src.pagerank import PPR_FREQUENCY
 import json
 import pickle
 import re
+import shutil
 
 from src.progress import format_seconds, progress, progress_write
 
@@ -1539,6 +1540,10 @@ def _query_bundle_root(subgraph_dir):
     return Path(subgraph_dir) / QUERY_LOGS_DIR_NAME
 
 
+def _query_bundle_dir(subgraph_dir, settings, bundle_id):
+    return _query_bundle_root(subgraph_dir) / _query_bundle_name(settings, bundle_id)
+
+
 def _query_log_filename(timestep):
     return f"query_log_snapshot_{timestep}.pkl"
 
@@ -1644,13 +1649,20 @@ def _next_query_bundle_id(subgraph_dir, settings):
     return max_bundle_id + 1
 
 
-def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
+def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id, *, replace_existing=False):
     bundle_started = time.perf_counter()
     bundle_root = _query_bundle_root(subgraph_dir)
     bundle_root.mkdir(parents=True, exist_ok=True)
 
     bundle_name = _query_bundle_name(settings, bundle_id)
-    bundle_dir = bundle_root / bundle_name
+    bundle_dir = _query_bundle_dir(subgraph_dir, settings, bundle_id)
+
+    if replace_existing and bundle_dir.exists():
+        if bundle_dir.is_dir():
+            shutil.rmtree(bundle_dir)
+        else:
+            bundle_dir.unlink()
+
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     prev_topics = None
@@ -1667,6 +1679,7 @@ def _generate_query_bundle(subgraph_dir, snapshot_files, settings, bundle_id):
         total=len(snapshot_paths),
         desc=f"Generating query bundle {bundle_name}",
         unit="snapshot",
+        leave=False,
     )
     for timestep, snapshot_path in bundle_steps:
         started = time.perf_counter()
@@ -1742,32 +1755,35 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
         f"for {len(snapshot_files)} snapshots (settings={_query_bundle_prefix(settings)})."
     )
     matches = _find_matching_query_bundles(subgraph_dir, settings, snapshot_files)
+    matches_by_id = {item["bundle_id"]: item for item in matches}
+    matching_bundle_ids = sorted(matches_by_id)
 
     if matches:
         progress_write(
             f"Query logs: found {len(matches)} matching stored bundle(s); "
-            f"highest bundle id is {matches[-1]['bundle_id']}."
+            f"matching ids={matching_bundle_ids}."
         )
     else:
         progress_write("Query logs: no matching stored bundles found.")
 
-    if len(matches) < target_index:
+    if target_index not in matches_by_id:
+        bundle_dir = _query_bundle_dir(subgraph_dir, settings, target_index)
+        bundle_state = "stale existing" if bundle_dir.exists() else "missing"
         progress_write(
-            f"Query logs: generating {target_index - len(matches)} additional bundle(s) "
-            f"to satisfy requested bundle {target_index}."
+            f"Query logs: requested bundle {target_index} is {bundle_state}; "
+            f"generating exact bundle id {target_index}."
         )
 
-    while len(matches) < target_index:
         next_bundle = _generate_query_bundle(
             subgraph_dir,
             snapshot_files,
             settings,
-            _next_query_bundle_id(subgraph_dir, settings),
+            target_index,
+            replace_existing=True,
         )
-        matches.append(next_bundle)
-        matches.sort(key=lambda item: item["bundle_id"])
+        matches_by_id[target_index] = next_bundle
 
-    selected = matches[target_index - 1]
+    selected = matches_by_id[target_index]
     if selected["status"] == "reused":
         progress_write(
             f"Query logs: using stored bundle {selected['bundle_name']} "
@@ -1785,6 +1801,7 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
         total=len(snapshot_files),
         desc=f"Loading query bundle {bundle_dir.name}",
         unit="snapshot",
+        leave=False,
     )
     for timestep, file_name in load_steps:
         with _query_log_path(bundle_dir, timestep).open("rb") as handle:

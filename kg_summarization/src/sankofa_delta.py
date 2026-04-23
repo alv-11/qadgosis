@@ -265,6 +265,7 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
         range(len(cache.snapshot_files) - 1),
         desc="Validating Sankofa cache",
         unit="delta",
+        leave=False,
     )
     for timestep in validation_steps:
         started = time.perf_counter()
@@ -384,6 +385,7 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         range(len(snapshot_paths) - 1),
         desc="Building Sankofa cache",
         unit="delta",
+        leave=False,
     )
     for timestep in cache_steps:
         started = time.perf_counter()
