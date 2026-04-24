@@ -499,7 +499,7 @@ unordered_map<int, double> calculate_top_k_cumulative(const vector<int> &walk,
 
 TopKResult calculate_top_k_cumulative_with_weights(
     const std::vector<int>& walk,
-    std::unordered_map<int, double>& cumulative_counts,  // using double for decayed weights
+    std::unordered_map<int, double>& cumulative_counts,
     int k,
     int timestep,
     std::unordered_map<int, std::unordered_map<int, int>>& counters, // {timestep -> {node -> freq}}
@@ -512,37 +512,52 @@ TopKResult calculate_top_k_cumulative_with_weights(
     
 
     ) {
-    // 1. Count queries for current timestep
-    for (int node : walk) {
-        counters[timestep][node]++;
+    const int effective_window_size = std::max(1, window_size);
+    auto& current_counts = counters[timestep];
+
+    // 1. Count visits for the current timestep.
+    for (int node : walk)
+        current_counts[node]++;
+
+    // 2. Maintain the decayed rolling window in streaming form:
+    //    decay previous state, add current timestep, subtract the expired timestep.
+    std::vector<int> stale_nodes;
+    stale_nodes.reserve(cumulative_counts.size());
+    for (auto& [node, value] : cumulative_counts) {
+        value *= decay_rate;
+        if (std::abs(value) <= 1e-12)
+            stale_nodes.push_back(node);
     }
+    for (int node : stale_nodes)
+        cumulative_counts.erase(node);
 
-    // 2. Collect relevant timesteps (sliding window)
-    std::vector<int> keys;
-    for (const auto& entry : counters) keys.push_back(entry.first);
-    std::sort(keys.begin(), keys.end());
-    int latest_timestep = keys.back();
-    int start_index = std::max(0, static_cast<int>(keys.size()) - window_size);
-    std::vector<int> relevant_timesteps(keys.begin() + start_index, keys.end());
+    for (const auto& [node, count] : current_counts)
+        cumulative_counts[node] += static_cast<double>(count);
 
-    // 3. Apply decay
-    std::unordered_map<int, double> decayed_counts;
-    std::unordered_map<int, double> individual_weights;
-  
+    const int expired_timestep = timestep - effective_window_size;
+    if (expired_timestep >= 0) {
+        auto expired_it = counters.find(expired_timestep);
+        if (expired_it != counters.end()) {
+            const double expired_weight = std::pow(decay_rate, effective_window_size);
+            for (const auto& [node, count] : expired_it->second) {
+                auto cumulative_it = cumulative_counts.find(node);
+                if (cumulative_it == cumulative_counts.end())
+                    continue;
 
-    for (int j : relevant_timesteps) {
-        double weight = std::pow(decay_rate, latest_timestep - j); //std::exp(-decay_rate * (latest_timestep - j));
-        //double weight = std::pow(decay_rate,  j - latest_timestep); // reverse decay
-        individual_weights[j] = weight;
-
-        for (const auto& [node, count] : counters[j]) {
-            decayed_counts[node] += count * weight;
+                cumulative_it->second -= static_cast<double>(count) * expired_weight;
+                if (std::abs(cumulative_it->second) <= 1e-12)
+                    cumulative_counts.erase(cumulative_it);
+            }
+            counters.erase(expired_it);
         }
     }
 
-    // // 4. Update cumulative counts
-    for (const auto& [node, decayed_count] : decayed_counts) {
-        cumulative_counts[node] += decayed_count;
+    // 3. Expose the current window weights for downstream weighted evaluation.
+    std::unordered_map<int, double> individual_weights;
+    const int earliest_timestep = std::max(0, timestep - effective_window_size + 1);
+    for (int j = earliest_timestep; j <= timestep; ++j) {
+        if (counters.find(j) != counters.end())
+            individual_weights[j] = std::pow(decay_rate, timestep - j);
     }
 
 
@@ -1014,7 +1029,7 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
         weighted_transitions = &weighted_transitions_storage;
     }
 
-    if (t%20 == 0) {
+    if (false){//(t%20 == 0) {
         R = generate_random_walks_directed_weighted(
             weighted_graph,
             *weighted_transitions,
