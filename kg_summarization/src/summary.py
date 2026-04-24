@@ -4,6 +4,7 @@ import random
 import numpy as np
 import math
 import hashlib
+import statistics
 from src.base import KnowledgeGraph
 import os
 import time
@@ -24,6 +25,9 @@ import shutil
 from concurrent.futures import ThreadPoolExecutor
 
 from src.progress import format_seconds, progress, progress_write
+
+
+ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS = True
 
 
 
@@ -101,6 +105,7 @@ class SummaryGraph(KnowledgeGraph):
         self.boundary_candidate_count = 0
         self.boundary_sampled_count = 0
         self.random_candidate_count = 0
+        self._node_involvement_stats_cache = None
         self.stage_counts = {
             "internal": 0,
             "boundary": 0,
@@ -141,6 +146,31 @@ class SummaryGraph(KnowledgeGraph):
             self.add_triple(triple)
             self.triples_set.add(triple)
             self.triple_count += 1
+            self._node_involvement_stats_cache = None
+
+    def _node_triple_involvement_stats(self):
+        if self._node_involvement_stats_cache is not None:
+            return self._node_involvement_stats_cache
+
+        counts = {}
+        for subject, _, obj in self.triples_set:
+            counts[subject] = counts.get(subject, 0) + 1
+            if obj != subject:
+                counts[obj] = counts.get(obj, 0) + 1
+
+        if not counts:
+            stats = {"mean": 0.0, "median": 0.0, "mode": 0}
+        else:
+            values = list(counts.values())
+            modes = statistics.multimode(values)
+            stats = {
+                "mean": float(np.mean(values)),
+                "median": float(np.median(values)),
+                "mode": min(modes) if modes else 0,
+            }
+
+        self._node_involvement_stats_cache = stats
+        return stats
 
     def _stage_percentage(self, stage_name):
         if self.triple_count == 0:
@@ -148,7 +178,7 @@ class SummaryGraph(KnowledgeGraph):
         return 100.0 * self.stage_counts[stage_name] / self.triple_count
 
     def summary_overview(self):
-        return (
+        overview = (
             f"triples={self.triple_count} entities={self.number_of_entities()} "
             f"topk_nodes={len(self.top_k_set)} reverse_index_targets={len(self.reverse_index)} "
             f"reverse_index_links={self.reverse_index_link_count} "
@@ -160,6 +190,15 @@ class SummaryGraph(KnowledgeGraph):
             f"random={self.stage_counts['random']}/{self.random_candidate_count} "
             f"({self._stage_percentage('random'):.1f}%)"
         )
+
+        if ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS:
+            involvement = self._node_triple_involvement_stats()
+            overview += (
+                f" node_triples(mean={involvement['mean']:.2f}, "
+                f"median={involvement['median']:.2f}, mode={involvement['mode']})"
+            )
+
+        return overview
 
     def composition_stats(self, timestep=None):
         stats = {
@@ -180,6 +219,15 @@ class SummaryGraph(KnowledgeGraph):
             "Random Candidate Triple Count": self.random_candidate_count,
             "Random Triple Percentage": self._stage_percentage("random"),
         }
+
+        if ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS:
+            involvement = self._node_triple_involvement_stats()
+            stats.update({
+                "Node Triple Involvement Mean": involvement["mean"],
+                "Node Triple Involvement Median": involvement["median"],
+                "Node Triple Involvement Mode": involvement["mode"],
+            })
+
         if timestep is not None:
             stats = {"Timestep": int(timestep), **stats}
         return stats
