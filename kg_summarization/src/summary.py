@@ -33,31 +33,101 @@ ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS = True
 
 def _extract_seed_nodes_from_query(query):
     """Return Sankofa seed nodes from answer entities, fallback to topic entity."""
+    return _extract_seed_nodes_from_query_with_source(query)[0]
+
+
+def _subgraph_uses_numeric_entity_ids(subgraph_dir):
+    return DBPedia._path_uses_numeric_entity_ids(os.fspath(subgraph_dir))
+
+
+def _is_numeric_entity_id(value):
+    return value is not None and str(value).isdigit()
+
+
+def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=False):
+    """Return Sankofa seed nodes and how they were derived."""
     parse = query.get("Parse", {}) if isinstance(query, dict) else {}
     answers = parse.get("Answers", [])
 
     seed_nodes = []
+    numeric_seed_nodes = []
     for ans in answers:
         if not isinstance(ans, dict):
             continue
-        if ans.get("AnswerType") != "Entity":
-            continue
         answer_arg = ans.get("AnswerArgument")
-        if answer_arg is not None:
+        if ans.get("AnswerType") == "Entity" and answer_arg is not None:
             seed_nodes.append(answer_arg)
+        elif allow_numeric_answers and _is_numeric_entity_id(answer_arg):
+            numeric_seed_nodes.append(answer_arg)
 
     if seed_nodes:
-        return seed_nodes
+        return seed_nodes, "answer_entities"
+
+    if numeric_seed_nodes:
+        return numeric_seed_nodes, "numeric_answer_recovery"
 
     topic_entity = parse.get("TopicEntityMid")
-    return [topic_entity] if topic_entity is not None else []
+    if topic_entity is not None:
+        return [topic_entity], "topic_fallback"
+
+    return [], "empty"
 
 
-def _build_seed_node_list(training_queries):
+def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, return_stats=False):
     seed_nodes = []
+    stats = {
+        "query_count": 0,
+        "answer_seed_queries": 0,
+        "numeric_answer_seed_queries": 0,
+        "topic_fallback_queries": 0,
+        "empty_queries": 0,
+        "seed_node_count": 0,
+    }
+
     for query in training_queries:
-        seed_nodes.extend(_extract_seed_nodes_from_query(query))
+        query_seed_nodes, source = _extract_seed_nodes_from_query_with_source(
+            query,
+            allow_numeric_answers=allow_numeric_answers,
+        )
+        stats["query_count"] += 1
+        stats["seed_node_count"] += len(query_seed_nodes)
+
+        if source == "answer_entities":
+            stats["answer_seed_queries"] += 1
+        elif source == "numeric_answer_recovery":
+            stats["numeric_answer_seed_queries"] += 1
+        elif source == "topic_fallback":
+            stats["topic_fallback_queries"] += 1
+        else:
+            stats["empty_queries"] += 1
+
+        seed_nodes.extend(query_seed_nodes)
+
+    if return_stats:
+        return seed_nodes, stats
+
     return seed_nodes
+
+
+def _log_query_seed_resolution(bundle_dir, timestep, file_name, seed_stats):
+    query_count = seed_stats["query_count"]
+    if query_count == 0:
+        return
+
+    if seed_stats["numeric_answer_seed_queries"] > 0:
+        progress_write(
+            f"Query logs: recovered numeric answer seeds for "
+            f"{seed_stats['numeric_answer_seed_queries']}/{query_count} training queries "
+            f"in {bundle_dir.name} snapshot {timestep} ({file_name}); "
+            "the stored bundle predates numeric wiki IDs being treated as entities."
+        )
+
+    if seed_stats["topic_fallback_queries"] > 0:
+        progress_write(
+            f"Query logs: evaluation seed fallback used TopicEntityMid for "
+            f"{seed_stats['topic_fallback_queries']}/{query_count} training queries "
+            f"in {bundle_dir.name} snapshot {timestep} ({file_name}) because no answer-derived seeds were available."
+        )
 
 
 def weighted_sampling(items, weights, k):
@@ -1693,6 +1763,30 @@ def _snapshot_metadata(snapshot_path):
     }
 
 
+def _snapshot_metadata_matches(stored_snapshot_metadata, current_snapshot_metadata):
+    if not isinstance(stored_snapshot_metadata, dict):
+        return False
+    if not isinstance(current_snapshot_metadata, dict):
+        return False
+
+    return (
+        stored_snapshot_metadata.get("name") == current_snapshot_metadata.get("name")
+        and stored_snapshot_metadata.get("size") == current_snapshot_metadata.get("size")
+    )
+
+
+def _snapshot_metadata_list_matches(stored_snapshot_metadata, current_snapshot_metadata):
+    if not isinstance(stored_snapshot_metadata, list):
+        return False
+    if len(stored_snapshot_metadata) != len(current_snapshot_metadata):
+        return False
+
+    return all(
+        _snapshot_metadata_matches(stored_item, current_item)
+        for stored_item, current_item in zip(stored_snapshot_metadata, current_snapshot_metadata)
+    )
+
+
 def _load_query_bundle_metadata(bundle_dir):
     metadata_path = _query_bundle_metadata_path(bundle_dir)
     if not metadata_path.exists():
@@ -1715,7 +1809,7 @@ def _query_bundle_is_valid(bundle_dir, metadata, settings, snapshot_metadata):
         return False
     if metadata.get("generation_settings") != settings:
         return False
-    if metadata.get("snapshot_files") != snapshot_metadata:
+    if not _snapshot_metadata_list_matches(metadata.get("snapshot_files"), snapshot_metadata):
         return False
     if metadata.get("query_log_count") != len(snapshot_metadata):
         return False
@@ -1999,6 +2093,7 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
 
 def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
     training_data, test_data, queries_ = {}, {}, {}
+    allow_numeric_answers = _subgraph_uses_numeric_entity_ids(bundle_dir.parent.parent)
 
     load_steps = progress(
         enumerate(snapshot_files),
@@ -2020,7 +2115,12 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
         split_idx = int(0.8 * len(query_log))
         training_data[timestep] = query_log[:split_idx]
         test_data[timestep] = query_log[split_idx:]
-        queries_[timestep] = _build_seed_node_list(training_data[timestep])
+        queries_[timestep], seed_stats = _build_seed_node_list(
+            training_data[timestep],
+            allow_numeric_answers=allow_numeric_answers,
+            return_stats=True,
+        )
+        _log_query_seed_resolution(bundle_dir, timestep, file_name, seed_stats)
         load_steps.set_postfix(
             snapshot=file_name,
             queries=query_count,

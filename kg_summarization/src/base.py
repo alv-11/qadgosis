@@ -2,6 +2,7 @@ import os
 import gzip
 import json
 import re
+from pathlib import Path
 
 import numpy as np
 import pdb
@@ -656,9 +657,15 @@ class DBPedia(KnowledgeGraph):
         self.rdf_gz_ = os.path.join(rdf_gz)
         self.query_dir_ = os.path.join(self.DBPEDIA_DATA_DIR_query, query_dir)
         self.mid_dir_ = os.path.join(self.DBPEDIA_DATA_DIR_query, mid_dir)
+        self.numeric_entity_ids_ = self._path_uses_numeric_entity_ids(self.rdf_gz_)
+
+    @staticmethod
+    def _path_uses_numeric_entity_ids(path):
+        return any(part.lower().startswith('wiki') for part in Path(path).parts)
 
     def is_entity(self, s):
-        return s.startswith('<') and s.endswith('>')
+        return (s.startswith('<') and s.endswith('>')) or \
+            (self.numeric_entity_ids_ and s.isdigit())
 
     def query_dir(self):
         return self.query_dir_
