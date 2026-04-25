@@ -5,12 +5,18 @@ import numpy as np
 import math
 import hashlib
 import statistics
-from src.base import KnowledgeGraph
 import os
-import time
+import json
+import pickle
+import re
+import shutil
+
 import pandas as pd
 import networkx as nx
-from src.base import DBPedia
+
+from concurrent.futures import ThreadPoolExecutor
+
+from src.base import KnowledgeGraph, DBPedia
 from src.user import query_log_by_mids
 from src.glimpse import SummaryMethod, GLIMPSE
 from src.hhop_random import HHOP_RANDOM
@@ -18,17 +24,11 @@ from src.isummary import ISUMMARY
 from src.metrics import total_query_log_metrics, average_query_log_metrics
 from src.apex import APEX
 from src.pagerank import PPR_FREQUENCY
-import json
-import pickle
-import re
-import shutil
-from concurrent.futures import ThreadPoolExecutor
-
 from src.progress import format_seconds, progress, progress_write
+from src.run_settings import resolve_query_generation_settings
 
 
 ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS = True
-
 
 
 def _extract_seed_nodes_from_query(query):
@@ -1427,8 +1427,9 @@ def evaluate_sankofa_timestep(
 
 class BaselineEngine:
 
-    def __init__(self, methods):
+    def __init__(self, methods, apex_graph=None):
         self.methods = _validated_method_names(methods)
+        self.apex_graph = apex_graph
         self.apex_state = {
             "H": None,
             "q": None,
@@ -1499,30 +1500,37 @@ class BaselineEngine:
 
     def _run_apex(self, method_name, KG, t, K, training_data, test_data, weights, graph_delta=None):
         method_label = _baseline_label(method_name)
+        apex_KG = self.apex_graph if self.apex_graph is not None else KG
+
+        if t > 0 and graph_delta is not None and self.apex_graph is not None:
+            apex_KG.apply_triple_delta(
+                triples_added=[tuple(triple) for triple in graph_delta.get("triples_added", [])],
+                triples_removed=[tuple(triple) for triple in graph_delta.get("triples_removed", [])],
+            )
 
         test_w = weights
 
         if t == 0:
             P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
-                KG, K, training_data[t], test_data[t], t=t
+                apex_KG, K, training_data[t], test_data[t], t=t
             )
         else:
-            H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev = self._prepare_apex_state_for_graph(KG, graph_delta)
-            try:
-                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
-                    KG, K, training_data[t], test_data[t],
-                    t=t,
-                    H=H_prev,
-                    q=q_prev,
-                    e=e_prev,
-                    r=r_prev,
-                    csr_indirect_matrices=csr_prev,
-                    index_list=index_prev
-                )
-            except Exception:
-                P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
-                    KG, K, training_data[t], test_data[t], t=t
-                )
+            H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev = self._prepare_apex_state_for_graph(apex_KG, graph_delta)
+            #try:
+            P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+                apex_KG, K, training_data[t], test_data[t],
+                t=t,
+                H=H_prev,
+                q=q_prev,
+                e=e_prev,
+                r=r_prev,
+                csr_indirect_matrices=csr_prev,
+                index_list=index_prev
+            )
+            #except Exception:
+            #    P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
+            #        apex_KG, K, training_data[t], test_data[t], t=t
+            #    )
 
         self.apex_state.update({
             "H": H,
@@ -1570,6 +1578,14 @@ class BaselineEngine:
             r_prev = np.pad(r_prev, (0, relation_count - len(r_prev)))
 
         if graph_delta is not None:
+            triples_added = {
+                (
+                    KG.entity_id(triple[0]),
+                    KG.relation_id(triple[1]),
+                    KG.entity_id(triple[2]),
+                )
+                for triple in graph_delta.get("triples_added", [])
+            }
             removed_triples = {
                 (
                     KG.entity_id(triple[0]),
@@ -1579,15 +1595,55 @@ class BaselineEngine:
                 for triple in graph_delta.get("triples_removed", [])
             }
 
-            if H_prev is not None:
-                H_prev = dict(H_prev)
-                for triple_id in removed_triples:
-                    H_prev[triple_id] = 0.0
+            touched_entities = set()
+            touched_relations = set()
+            for triple_id in triples_added | removed_triples:
+                touched_entities.update((triple_id[0], triple_id[2]))
+                touched_relations.add(triple_id[1])
 
-            if index_prev is not None:
-                index_prev = [triple_id for triple_id in index_prev if triple_id not in removed_triples]
+            removed_entities = {
+                entity_id
+                for entity_id in touched_entities
+                if KG.entity_triple_count(entity_id) == 0
+            }
+            removed_relations = {
+                relation_id
+                for relation_id in touched_relations
+                if KG.relation_triple_count(relation_id) == 0
+            }
 
-            csr_prev = None
+            if q_prev is not None and removed_entities:
+                q_prev = q_prev.copy()
+                q_prev[list(removed_entities)] = 0
+
+            if e_prev is not None and removed_entities:
+                e_prev = e_prev.copy()
+                e_prev[list(removed_entities)] = 0
+
+            if r_prev is not None and removed_relations:
+                r_prev = r_prev.copy()
+                r_prev[list(removed_relations)] = 0
+
+            def _keep_triple_state(triple_id):
+                return not (
+                    triple_id in removed_triples
+                    or triple_id[0] in removed_entities
+                    or triple_id[2] in removed_entities
+                    or triple_id[1] in removed_relations
+                )
+
+            if H_prev is not None and (removed_triples or removed_entities or removed_relations):
+                H_prev = {
+                    triple_id: heat
+                    for triple_id, heat in H_prev.items()
+                    if _keep_triple_state(triple_id)
+                }
+
+            if index_prev is not None and (removed_triples or removed_entities or removed_relations):
+                index_prev = [triple_id for triple_id in index_prev if _keep_triple_state(triple_id)]
+
+            if removed_triples or triples_added:
+                csr_prev = None
 
         return H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev
 
@@ -1693,22 +1749,18 @@ def update_topics_fixed(prev_topics, graph, K=5, change_ratio=0.4, rng=None):
 
 QUERY_LOGS_DIR_NAME = "query_logs"
 QUERY_LOG_BUNDLE_METADATA_FILE = "bundle_metadata.json"
-QUERY_LOG_TOPIC_COUNT = 5
-QUERY_LOG_TOPIC_CHANGE_RATIO = 0.4
-QUERY_LOG_NUM_QUERIES = 200
-QUERY_LOG_SHUFFLE = True
-QUERY_LOG_RANDOM_QUERY_PROB = 0.0
 
 
 def _query_generation_settings():
+    query_settings = resolve_query_generation_settings()
     return {
         "topic_strategy": "update_topics_fixed",
-        "topic_count": QUERY_LOG_TOPIC_COUNT,
-        "topic_change_ratio": QUERY_LOG_TOPIC_CHANGE_RATIO,
+        "topic_count": query_settings["topic_count"],
+        "topic_change_ratio": query_settings["topic_change_ratio"],
         "query_strategy": "query_log_by_mids",
-        "num_queries": QUERY_LOG_NUM_QUERIES,
-        "shuffle": QUERY_LOG_SHUFFLE,
-        "random_query_prob": QUERY_LOG_RANDOM_QUERY_PROB,
+        "num_queries": query_settings["num_queries"],
+        "shuffle": query_settings["shuffle"],
+        "random_query_prob": query_settings["random_query_prob"],
     }
 
 
@@ -2157,6 +2209,7 @@ def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle
 
 def save_or_load_query_log(query_log_file, graph, timestep, topic_mids=None):
     """Save or load query logs from a file."""
+    settings = _query_generation_settings()
 
     # Load if exists (DO NOT regenerate)
     if os.path.exists(query_log_file):
@@ -2167,17 +2220,17 @@ def save_or_load_query_log(query_log_file, graph, timestep, topic_mids=None):
         topic_mids = update_topics_fixed(
             prev_topics=None,
             graph=graph,
-            K=QUERY_LOG_TOPIC_COUNT,
-            change_ratio=QUERY_LOG_TOPIC_CHANGE_RATIO,
+            K=settings["topic_count"],
+            change_ratio=settings["topic_change_ratio"],
         )
 
     query_log = generate_query_logs(
         graph,
         timestep,
         topic_mids,
-        num_queries=QUERY_LOG_NUM_QUERIES,
-        shuffle=QUERY_LOG_SHUFFLE,
-        random_query_prob=QUERY_LOG_RANDOM_QUERY_PROB,
+        num_queries=settings["num_queries"],
+        shuffle=settings["shuffle"],
+        random_query_prob=settings["random_query_prob"],
     )
 
     with open(query_log_file, "wb") as f:

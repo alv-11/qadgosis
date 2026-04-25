@@ -7,6 +7,7 @@ import logging
 import pdb
 import random
 import warnings
+from src.progress import format_seconds, progress, progress_write
 DETAILED_LOGGING = True
 DETAILED_PRINTING = False
 MORE_DETAIL = False
@@ -270,6 +271,14 @@ def construct_complete(KG, K, index_list):
     return P
 
 
+def _build_csr_indirect_matrices(KG, diameter, alpha):
+    csr_indirect_matrices = {0: sp.eye(KG.number_of_entities())}
+    indirect_heat = KG.csr_matrix_indirect_heat()
+    for i in range(diameter):
+        csr_indirect_matrices[i + 1] = alpha * indirect_heat * csr_indirect_matrices[i]
+    return csr_indirect_matrices
+
+
 def APEX_naive(KG, K, query_log, query_num_per_test=1, gamma=GAMMA, diameter = 1, alpha=0.3):
     print('APEX-N')
     update_time_list = []
@@ -401,10 +410,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
         # Initialization phase (unchanged)
         t0 = time()
         num_queries_total = len(query_log)
-        csr_indirect_matrices = {}
-        csr_indirect_matrices[0] = sp.eye(KG.number_of_entities())
-        for i in range(diameter):
-            csr_indirect_matrices[i + 1] = alpha * KG.csr_matrix_indirect_heat() * csr_indirect_matrices[i]
+        csr_indirect_matrices = _build_csr_indirect_matrices(KG, diameter, alpha)
 
         # Initial state
         index_list = []
@@ -417,15 +423,15 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
             topic_eid = KG.entity_id(parse['TopicEntityMid'])
-            if topic_eid is None:
-                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
-                continue
+            #if topic_eid is None:
+            #    print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
+            #    continue
             relation = parse['InferentialChain'][0]
-            try:
-                answers = KG[topic_mid][relation]
-            except KeyError:
-                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
-                continue
+            #try:
+            answers = KG[topic_mid][relation]
+            #except KeyError:
+            #    print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
+            #    continue
             q[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -507,10 +513,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             or 0 not in csr_indirect_matrices
             or csr_indirect_matrices[0].shape[0] != KG.number_of_entities()
         ):
-            csr_indirect_matrices = {}
-            csr_indirect_matrices[0] = sp.eye(KG.number_of_entities())
-            for i in range(diameter):
-                csr_indirect_matrices[i + 1] = alpha * KG.csr_matrix_indirect_heat() * csr_indirect_matrices[i]
+            csr_indirect_matrices = _build_csr_indirect_matrices(KG, diameter, alpha)
 
         if index_list is None:
             index_list = []
@@ -520,21 +523,27 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             #print(key)
             H_new[key] = H[key] * gamma**3
 
+        for triple_in_id in H_new:
+            if H_new[triple_in_id] > 0 and H_new[triple_in_id] < 1e-5:
+                H_new[triple_in_id] = 0
+
+        changed_triples_in_id = set()
+        progress_write("Starting query processing")
         # Process all queries in training
         for query in training:
             q_T = np.zeros(KG.number_of_entities())
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
             topic_eid = KG.entity_id(parse['TopicEntityMid'])
-            if topic_eid is None:
-                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
-                continue
+            #if topic_eid is None:
+            #    print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
+            #    continue
             relation = parse['InferentialChain'][0]
-            try:
-                answers = KG[topic_mid][relation]
-            except KeyError:
-                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
-                continue
+            #try:
+            answers = KG[topic_mid][relation]
+            #except KeyError:
+            #    print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
+            #    continue
             q_T[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -546,11 +555,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             r = r * gamma
             r[KG.relation_id(relation)] += 1
 
-            for i in H_new:
-                if H_new[i] > 0 and H_new[i] < 1e-5:
-                    H_new[i] = 0
-
-            changed_triples_in_id = set()
+            query_changed_triples_in_id = set()
 
             for changed_entity_id in changed_entity_list:
                 potential_triples_vector = KG.csr_matrix_indirect()[changed_entity_id, :]
@@ -563,24 +568,22 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
                         if triple_found[1] < KG.number_of_relationships():
                             if triple_found[1] != relation and r[triple_found[1]] == 0:
                                 continue
-                            changed_triples_in_id.add(triple_found)
+                            query_changed_triples_in_id.add(triple_found)
 
             e = e_new
 
             for triple in KG.triples_by_relation_id(KG.relation_id(relation)):
-                changed_triples_in_id.add(triple)
+                query_changed_triples_in_id.add(triple)
 
-            changed_triples_in_id_list = list(changed_triples_in_id)
-            for triple_in_id in changed_triples_in_id_list:
-                new_value = e[triple_in_id[0]] * ((r[triple_in_id[1]]) + smoothing) * e[triple_in_id[2]]
-                if new_value > 0:
-                    H_new[triple_in_id] = new_value
-                else:
-                    changed_triples_in_id.remove(triple_in_id)
+            changed_triples_in_id.update(query_changed_triples_in_id)
+            
+        progress_write("Done with query processing")
+        for triple_in_id in changed_triples_in_id:
+            new_value = e[triple_in_id[0]] * ((r[triple_in_id[1]]) + smoothing) * e[triple_in_id[2]]
+            H_new[triple_in_id] = new_value if new_value > 0 else 0
 
-            for triple_in_id in list(changed_triples_in_id):
-                if triple_in_id not in H:
-                    H[triple_in_id] = 0
+            if triple_in_id not in H:
+                H[triple_in_id] = 0
 
         #incremental
         incremental_sort(index_list, changed_triples_in_id, H, H_new)
@@ -593,7 +596,7 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
                 break
         index_list = new_index_list
 
-        H = H_new
+        H = {triple_in_id: H_new[triple_in_id] for triple_in_id in index_list}
 
         #construct
         P = construct_complete(KG, K, index_list)
@@ -755,6 +758,12 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
         for key in H:
             H_new[key] = H[key] * gamma**3
 
+        for triple_in_id in H_new:
+            if H_new[triple_in_id] > 0 and H_new[triple_in_id] < 1e-5:
+                H_new[triple_in_id] = 0
+
+        changed_triples_in_id = set()
+
         # Process queries incrementally
         for query in training:
             q_T = np.zeros(KG.number_of_entities())
@@ -781,11 +790,7 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
             r = r * gamma
             r[KG.relation_id(relation)] += 1
 
-            for i in H_new:
-                if H_new[i] > 0 and H_new[i] < 1e-5:
-                    H_new[i] = 0
-
-            changed_triples_in_id = set()
+            query_changed_triples_in_id = set()
 
             for changed_entity_id in changed_entity_list:
                 potential_triples_vector = KG.csr_matrix_indirect()[changed_entity_id, :]
@@ -798,24 +803,21 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
                         if triple_found[1] < KG.number_of_relationships():
                             if triple_found[1] != relation and r[triple_found[1]] == 0:
                                 continue
-                            changed_triples_in_id.add(triple_found)
+                            query_changed_triples_in_id.add(triple_found)
 
             e = e_new
 
             for triple in KG.triples_by_relation_id(KG.relation_id(relation)):
-                changed_triples_in_id.add(triple)
+                query_changed_triples_in_id.add(triple)
 
-            changed_triples_in_id_list = list(changed_triples_in_id)
-            for triple_in_id in changed_triples_in_id_list:
-                new_value = e[triple_in_id[0]] * ((r[triple_in_id[1]]) + smoothing) * e[triple_in_id[2]]
-                if new_value > 0:
-                    H_new[triple_in_id] = new_value
-                else:
-                    changed_triples_in_id.remove(triple_in_id)
+            changed_triples_in_id.update(query_changed_triples_in_id)
 
-            for triple_in_id in list(changed_triples_in_id):
-                if triple_in_id not in H:
-                    H[triple_in_id] = 0
+        for triple_in_id in changed_triples_in_id:
+            new_value = e[triple_in_id[0]] * ((r[triple_in_id[1]]) + smoothing) * e[triple_in_id[2]]
+            H_new[triple_in_id] = new_value if new_value > 0 else 0
+
+            if triple_in_id not in H:
+                H[triple_in_id] = 0
 
         print('incremental')
         incremental_sort(index_list, changed_triples_in_id, H, H_new)

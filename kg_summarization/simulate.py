@@ -15,12 +15,19 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from src.progress import format_seconds, progress, progress_write
+from src.run_settings import (
+    main_runtime_settings_to_env,
+    query_generation_settings_to_env,
+    resolve_main_runtime_settings,
+    resolve_query_generation_settings,
+)
 from src.sankofa_delta import ensure_sankofa_delta_cache
 from src.summary import prepare_query_bundles
 
@@ -79,6 +86,27 @@ def resolve_live_output_mode():
     if mode not in {"none", "first", "all"}:
         return DEFAULT_LIVE_OUTPUT_MODE
     return mode
+
+
+@contextmanager
+def temporary_environment(overrides):
+    previous_values = {}
+    missing_keys = []
+
+    for key, value in overrides.items():
+        if key in os.environ:
+            previous_values[key] = os.environ[key]
+        else:
+            missing_keys.append(key)
+        os.environ[key] = value
+
+    try:
+        yield
+    finally:
+        for key in missing_keys:
+            os.environ.pop(key, None)
+        for key, value in previous_values.items():
+            os.environ[key] = value
 
 
 class LiveOutputController:
@@ -283,15 +311,33 @@ def choose_parallel_workers(num_runs, subgraph_dir):
     }
 
 
-def prewarm_runtime_artifacts(subgraph_dir, num_runs):
+def capture_settings_snapshot():
+    main_settings = resolve_main_runtime_settings()
+    query_generation_settings = resolve_query_generation_settings()
+
+    return {
+        "main": {
+            **main_settings,
+            "baseline_methods": list(main_settings["baseline_methods"]),
+        },
+        "query_generation": dict(query_generation_settings),
+        "env": {
+            **main_runtime_settings_to_env(main_settings),
+            **query_generation_settings_to_env(query_generation_settings),
+        },
+    }
+
+
+def prewarm_runtime_artifacts(subgraph_dir, num_runs, settings_snapshot):
     progress_write(f"Prewarming Sankofa cache for {subgraph_dir}...")
     cache = ensure_sankofa_delta_cache(subgraph_dir, verbose=True)
 
     bundle_indices = list(range(1, num_runs + 1))
-    prepared_bundles, snapshot_files = prepare_query_bundles(
-        subgraph_dir,
-        query_bundle_indices=bundle_indices,
-    )
+    with temporary_environment(settings_snapshot["env"]):
+        prepared_bundles, snapshot_files = prepare_query_bundles(
+            subgraph_dir,
+            query_bundle_indices=bundle_indices,
+        )
     progress_write(
         f"Prewarmed query bundles {bundle_indices} across {len(snapshot_files)} timesteps "
         f"({len(prepared_bundles)} bundle(s))."
@@ -300,7 +346,7 @@ def prewarm_runtime_artifacts(subgraph_dir, num_runs):
     return cache
 
 
-def build_run_spec(batch_dir, run_index):
+def build_run_spec(batch_dir, run_index, settings_snapshot):
     run_dir = batch_dir / f"run_{run_index:03d}_bundle_{run_index:03d}"
     log_path = run_dir / "execution.log"
     cmd = [PYTHON_BIN, str(ORIGINAL_SCRIPT), str(run_dir), str(run_index)]
@@ -310,6 +356,14 @@ def build_run_spec(batch_dir, run_index):
         "run_dir": run_dir,
         "log_path": log_path,
         "command": cmd,
+        "settings_snapshot": {
+            "main": {
+                **settings_snapshot["main"],
+                "baseline_methods": list(settings_snapshot["main"]["baseline_methods"]),
+            },
+            "query_generation": dict(settings_snapshot["query_generation"]),
+        },
+        "settings_env": dict(settings_snapshot["env"]),
     }
 
 
@@ -364,6 +418,7 @@ def finalize_run_record(spec, exit_code):
         "duration_seconds": time.perf_counter() - spec["started_perf"],
         "exit_code": exit_code,
         "status": "success" if exit_code == 0 else "failed",
+        "settings_snapshot": spec["settings_snapshot"],
         "output_files": sorted(path.name for path in run_dir.iterdir() if path.is_file()),
         "main_run_metadata": load_json_if_exists(run_dir / "run_metadata.json"),
     }
@@ -420,11 +475,12 @@ def main():
     num_runs = resolve_num_runs()
     subgraph_dir = resolve_subgraph_dir()
     parent_dir = resolve_parent_dir(subgraph_dir)
+    settings_snapshot = capture_settings_snapshot()
 
     parent_dir.mkdir(parents=True, exist_ok=True)
     batch_dir = create_batch_dir(parent_dir, subgraph_dir, num_runs)
 
-    cache = prewarm_runtime_artifacts(subgraph_dir, num_runs)
+    cache = prewarm_runtime_artifacts(subgraph_dir, num_runs, settings_snapshot)
     parallel_workers, parallel_info = choose_parallel_workers(num_runs, subgraph_dir)
 
     progress_write(
@@ -460,13 +516,20 @@ def main():
             "cache_dir": str(cache.cache_dir),
             "snapshot_count": len(cache.snapshot_files),
         },
+        "settings_snapshot": {
+            "main": settings_snapshot["main"],
+            "query_generation": settings_snapshot["query_generation"],
+        },
         "query_bundles": list(range(1, num_runs + 1)),
         "runs": [],
         "averaged_outputs": [],
     }
     write_overview(batch_dir, overview)
 
-    pending = [build_run_spec(batch_dir, run_index) for run_index in range(1, num_runs + 1)]
+    pending = [
+        build_run_spec(batch_dir, run_index, settings_snapshot)
+        for run_index in range(1, num_runs + 1)
+    ]
     active = []
     completed = []
     live_output_mode = resolve_live_output_mode()
@@ -503,6 +566,7 @@ def main():
             log_handle = spec["log_path"].open("w", encoding="utf-8")
             spec["log_handle"] = log_handle
             child_env_for_run = dict(child_env)
+            child_env_for_run.update(spec["settings_env"])
 
             if spec["pipe_output"]:
                 child_env_for_run["QADGOSIS_LIVE_RUN_PROGRESS"] = "1"

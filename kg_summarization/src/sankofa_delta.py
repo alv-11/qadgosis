@@ -206,6 +206,38 @@ def initialize_streamed_evaluation_graph(cache: SankofaDeltaCache, *, progress_l
     return load_cached_snapshot_kg(cache, 0, progress_label=progress_label)
 
 
+def initialize_streamed_apex_graph(cache: SankofaDeltaCache, *, progress_label: str | None = None) -> KnowledgeGraph:
+    initial_snapshot = [tuple(triple) for triple in load_snapshot_triples(cache, 0)]
+    reserved_triples = []
+    seen_triples = set()
+
+    def remember(triple):
+        if triple in seen_triples:
+            return
+        seen_triples.add(triple)
+        reserved_triples.append(triple)
+
+    for triple in initial_snapshot:
+        remember(triple)
+
+    for timestep in range(len(cache.snapshot_files) - 1):
+        delta = load_triple_delta(cache, timestep)
+        for triple in delta["triples_added"]:
+            remember(tuple(triple))
+
+    graph = KnowledgeGraph()
+    graph.reserve_triples(reserved_triples)
+    graph.apply_triple_delta(triples_added=initial_snapshot, triples_removed=[])
+
+    if progress_label is not None:
+        progress_write(
+            f"{progress_label}: ready with {graph.number_of_entities():,} reserved entities, "
+            f"{graph.number_of_relationships():,} reserved relations, {graph.number_of_triples():,} active triples"
+        )
+
+    return graph
+
+
 def apply_triple_delta_to_knowledge_graph(graph: KnowledgeGraph, delta: TripleDelta) -> bool:
     triples_removed = [tuple(triple) for triple in delta["triples_removed"]]
     triples_added = [tuple(triple) for triple in delta["triples_added"]]
