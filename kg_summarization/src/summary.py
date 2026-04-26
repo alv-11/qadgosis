@@ -32,7 +32,7 @@ ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS = True
 
 
 def _extract_seed_nodes_from_query(query):
-    """Return Sankofa seed nodes from answer entities, fallback to topic entity."""
+    """Return Sankofa seed nodes from answer entities plus the topic entity."""
     return _extract_seed_nodes_from_query_with_source(query)[0]
 
 
@@ -48,6 +48,7 @@ def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=F
     """Return Sankofa seed nodes and how they were derived."""
     parse = query.get("Parse", {}) if isinstance(query, dict) else {}
     answers = parse.get("Answers", [])
+    topic_entity = parse.get("TopicEntityMid")
 
     seed_nodes = []
     numeric_seed_nodes = []
@@ -61,12 +62,15 @@ def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=F
             numeric_seed_nodes.append(answer_arg)
 
     if seed_nodes:
+        if topic_entity is not None and topic_entity not in seed_nodes:
+            seed_nodes.insert(0, topic_entity)
         return seed_nodes, "answer_entities"
 
     if numeric_seed_nodes:
+        if topic_entity is not None and topic_entity not in numeric_seed_nodes:
+            numeric_seed_nodes.insert(0, topic_entity)
         return numeric_seed_nodes, "numeric_answer_recovery"
 
-    topic_entity = parse.get("TopicEntityMid")
     if topic_entity is not None:
         return [topic_entity], "topic_fallback"
 
