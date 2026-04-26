@@ -6,6 +6,7 @@ def extract_query_seed_entities(query, seed_mode="topic_only"):
     Return the entities used to seed query-driven baselines.
     """
     parse = query.get("Parse", {}) if isinstance(query, dict) else {}
+    topic_entity = parse.get("TopicEntityMid")
 
     if seed_mode == "answers_fallback_topic":
         answers = []
@@ -17,12 +18,13 @@ def extract_query_seed_entities(query, seed_mode="topic_only"):
                 answers.append(answer_arg)
 
         if answers:
+            if topic_entity is not None and topic_entity not in answers:
+                return [topic_entity, *answers]
             return answers
 
     if seed_mode != "topic_only" and seed_mode != "answers_fallback_topic":
         raise ValueError(f"Unsupported seed_mode: {seed_mode}")
 
-    topic_entity = parse.get("TopicEntityMid")
     return [topic_entity] if topic_entity is not None else []
 
 
