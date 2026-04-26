@@ -55,7 +55,7 @@ class Summary(KnowledgeGraph):
                     self.add_triple((topic_mid, r, entity))
 
         # in case self.entities() is empty
-        self.entities_.add(topic_mid)
+        self._ensure_entity(topic_mid)
 
     
     def add_random_triple(self):

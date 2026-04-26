@@ -41,8 +41,8 @@ class Summary(KnowledgeGraph):
                 for r in self.parent().entities_to_relation_[topic_mid][entity]:
                     self.add_triple((topic_mid, r, entity))
 
-        # in case self.entities() is empty
-        self.entities_.add(topic_mid)
+        # in case self.entities() is empty  
+        self._ensure_entity(topic_mid)
 
     
     def add_random_triple(self):
