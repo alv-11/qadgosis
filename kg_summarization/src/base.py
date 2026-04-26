@@ -58,6 +58,7 @@ class KnowledgeGraph(object):
         self.csr_matrix_heterogeneous_indirect_ = None
         self.transition_matrix_ = None
         self.csr_matrix_indirect_heat_ = None
+        self.triples_by_relation_id_ = {}
 
     def _cache_triple_by_relation(self, triple):
         e1, r, e2 = triple
@@ -288,15 +289,19 @@ class KnowledgeGraph(object):
         triples_removed = triples_removed or []
         triples_added = triples_added or []
 
+        if not triples_removed and not triples_added:
+            return False
+
+        # Invalidate up-front so per-triple cache maintenance is skipped
+        # during large delta application batches.
+        self._invalidate_cached_views()
+
         changed = False
         for triple in triples_removed:
             changed = self.remove_triple(triple, invalidate_views=False) or changed
 
         for triple in triples_added:
             changed = self.add_triple(triple, invalidate_views=False) or changed
-
-        if changed:
-            self._invalidate_cached_views()
 
         return changed
 

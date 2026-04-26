@@ -1504,17 +1504,17 @@ class BaselineEngine:
 
     def _run_apex(self, method_name, KG, t, K, training_data, test_data, weights, graph_delta=None):
         method_label = _baseline_label(method_name)
-        apex_KG = self.apex_graph if self.apex_graph is not None else KG
+        apex_KG = KG #self.apex_graph if self.apex_graph is not None else KG
         state_prep_seconds = 0.0
 
-        progress_write(
-                "Applying graph delta"
-            )
-        if t > 0 and graph_delta is not None and self.apex_graph is not None:
-            apex_KG.apply_triple_delta(
-                triples_added=[tuple(triple) for triple in graph_delta.get("triples_added", [])],
-                triples_removed=[tuple(triple) for triple in graph_delta.get("triples_removed", [])],
-            )
+        #progress_write(
+        #        "Applying graph delta"
+        #    )
+        #if t > 0 and graph_delta is not None and self.apex_graph is not None:
+        #    apex_KG.apply_triple_delta(
+        #        triples_added=[tuple(triple) for triple in graph_delta.get("triples_added", [])],
+        #        triples_removed=[tuple(triple) for triple in graph_delta.get("triples_removed", [])],
+        #    )
 
         test_w = weights
         progress_write(

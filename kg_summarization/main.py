@@ -231,13 +231,13 @@ def main():
     progress_write("Evaluation graph initialization complete.")
 
     apex_graph = None
-    if "apex" in baseline_methods:
-        progress_write("Loading Apex graph with reserved dummy nodes...")
-        apex_graph = initialize_streamed_apex_graph(
-            cache,
-            progress_label=f"{run_dir.name}: Apex graph",
-        )
-        progress_write("Apex graph initialization complete.")
+    #if "apex" in baseline_methods:
+    #    progress_write("Loading Apex graph with reserved dummy nodes...")
+    #    apex_graph = initialize_streamed_apex_graph(
+    #        cache,
+    #        progress_label=f"{run_dir.name}: Apex graph",
+    #    )
+    #    progress_write("Apex graph initialization complete.")
 
     baseline_engine = BaselineEngine(
         methods=baseline_methods,
