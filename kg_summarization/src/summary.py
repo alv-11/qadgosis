@@ -1506,6 +1506,9 @@ class BaselineEngine:
         method_label = _baseline_label(method_name)
         apex_KG = self.apex_graph if self.apex_graph is not None else KG
 
+        progress_write(
+                "Applying graph delta"
+            )
         if t > 0 and graph_delta is not None and self.apex_graph is not None:
             apex_KG.apply_triple_delta(
                 triples_added=[tuple(triple) for triple in graph_delta.get("triples_added", [])],
@@ -1513,13 +1516,21 @@ class BaselineEngine:
             )
 
         test_w = weights
-
+        progress_write(
+                "Graph delta applied, running APEX"
+            )
         if t == 0:
             P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
                 apex_KG, K, training_data[t], test_data[t], t=t
             )
         else:
+            progress_write(
+                "Apex apply state preparation for graph changes"
+            )
             H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev = self._prepare_apex_state_for_graph(apex_KG, graph_delta)
+            progress_write(
+                "Apex apply state preparation for graph changes complete"
+            )
             #try:
             P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
                 apex_KG, K, training_data[t], test_data[t],
@@ -1535,7 +1546,9 @@ class BaselineEngine:
             #    P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
             #        apex_KG, K, training_data[t], test_data[t], t=t
             #    )
-
+        progress_write(
+                "Updating APEX state"
+            )
         self.apex_state.update({
             "H": H,
             "q": q,
@@ -1544,13 +1557,14 @@ class BaselineEngine:
             "csr": csr,
             "index_list": index_list
         })
-
+        progress_write(
+                "Updating APEX state complete"
+            )
         self.present_rows[method_name].append({
             "Timestep": t,
             _present_col(method_label): total_F1,
             "Runtime (seconds)": run_time
         })
-
         df_w = process_all_timesteps(
             training_set=test_data,
             summary=P,
@@ -1582,71 +1596,62 @@ class BaselineEngine:
             r_prev = np.pad(r_prev, (0, relation_count - len(r_prev)))
 
         if graph_delta is not None:
-            triples_added = {
-                (
-                    KG.entity_id(triple[0]),
-                    KG.relation_id(triple[1]),
-                    KG.entity_id(triple[2]),
-                )
-                for triple in graph_delta.get("triples_added", [])
-            }
-            removed_triples = {
-                (
-                    KG.entity_id(triple[0]),
-                    KG.relation_id(triple[1]),
-                    KG.entity_id(triple[2]),
-                )
-                for triple in graph_delta.get("triples_removed", [])
-            }
+            triples_added_raw = graph_delta.get("triples_added", [])
+            triples_removed_raw = graph_delta.get("triples_removed", [])
 
-            touched_entities = set()
-            touched_relations = set()
-            for triple_id in triples_added | removed_triples:
-                touched_entities.update((triple_id[0], triple_id[2]))
-                touched_relations.add(triple_id[1])
-
-            removed_entities = {
-                entity_id
-                for entity_id in touched_entities
-                if KG.entity_triple_count(entity_id) == 0
-            }
-            removed_relations = {
-                relation_id
-                for relation_id in touched_relations
-                if KG.relation_triple_count(relation_id) == 0
-            }
-
-            if q_prev is not None and removed_entities:
-                q_prev = q_prev.copy()
-                q_prev[list(removed_entities)] = 0
-
-            if e_prev is not None and removed_entities:
-                e_prev = e_prev.copy()
-                e_prev[list(removed_entities)] = 0
-
-            if r_prev is not None and removed_relations:
-                r_prev = r_prev.copy()
-                r_prev[list(removed_relations)] = 0
-
-            def _keep_triple_state(triple_id):
-                return not (
-                    triple_id in removed_triples
-                    or triple_id[0] in removed_entities
-                    or triple_id[2] in removed_entities
-                    or triple_id[1] in removed_relations
-                )
-
-            if H_prev is not None and (removed_triples or removed_entities or removed_relations):
-                H_prev = {
-                    triple_id: heat
-                    for triple_id, heat in H_prev.items()
-                    if _keep_triple_state(triple_id)
+            if triples_removed_raw:
+                entity_id_for = KG.entity_id
+                relation_id_for = KG.relation_id
+                removed_triples = {
+                    (
+                        entity_id_for(triple[0]),
+                        relation_id_for(triple[1]),
+                        entity_id_for(triple[2]),
+                    )
+                    for triple in triples_removed_raw
                 }
 
-            if index_prev is not None and (removed_triples or removed_entities or removed_relations):
-                index_prev = [triple_id for triple_id in index_prev if _keep_triple_state(triple_id)]
+                touched_entities = set()
+                touched_relations = set()
+                for subject_id, relation_id, object_id in removed_triples:
+                    touched_entities.add(subject_id)
+                    touched_entities.add(object_id)
+                    touched_relations.add(relation_id)
 
-            if removed_triples or triples_added:
+                removed_entities = {
+                    entity_id
+                    for entity_id in touched_entities
+                    if KG.entity_triple_count(entity_id) == 0
+                }
+                removed_relations = {
+                    relation_id
+                    for relation_id in touched_relations
+                    if KG.relation_triple_count(relation_id) == 0
+                }
+
+                if q_prev is not None and removed_entities:
+                    q_prev = q_prev.copy()
+                    q_prev[list(removed_entities)] = 0
+
+                if e_prev is not None and removed_entities:
+                    e_prev = e_prev.copy()
+                    e_prev[list(removed_entities)] = 0
+
+                if r_prev is not None and removed_relations:
+                    r_prev = r_prev.copy()
+                    r_prev[list(removed_relations)] = 0
+
+                if index_prev is not None and (removed_triples or removed_entities or removed_relations):
+                    index_prev = [
+                        triple_id
+                        for triple_id in index_prev
+                        if triple_id not in removed_triples
+                        and triple_id[0] not in removed_entities
+                        and triple_id[2] not in removed_entities
+                        and triple_id[1] not in removed_relations
+                    ]
+
+            if triples_removed_raw or triples_added_raw:
                 csr_prev = None
 
         return H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev
