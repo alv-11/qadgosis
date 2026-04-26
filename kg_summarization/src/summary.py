@@ -1505,6 +1505,7 @@ class BaselineEngine:
     def _run_apex(self, method_name, KG, t, K, training_data, test_data, weights, graph_delta=None):
         method_label = _baseline_label(method_name)
         apex_KG = self.apex_graph if self.apex_graph is not None else KG
+        state_prep_seconds = 0.0
 
         progress_write(
                 "Applying graph delta"
@@ -1527,7 +1528,9 @@ class BaselineEngine:
             progress_write(
                 "Apex apply state preparation for graph changes"
             )
+            state_prep_started = time.perf_counter()
             H_prev, q_prev, e_prev, r_prev, csr_prev, index_prev = self._prepare_apex_state_for_graph(apex_KG, graph_delta)
+            state_prep_seconds = time.perf_counter() - state_prep_started
             progress_write(
                 "Apex apply state preparation for graph changes complete"
             )
@@ -1563,7 +1566,7 @@ class BaselineEngine:
         self.present_rows[method_name].append({
             "Timestep": t,
             _present_col(method_label): total_F1,
-            "Runtime (seconds)": run_time
+            "Runtime (seconds)": float(run_time) + state_prep_seconds
         })
         df_w = process_all_timesteps(
             training_set=test_data,
