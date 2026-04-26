@@ -255,11 +255,12 @@ RandomWalkResult generate_random_walks_directed_weighted(
     const Graph_& weighted_graph,
     const WeightedTransitionLookup& weighted_transitions,
     int walks_per_node,
-    int walk_length
+    double epsilon
 ) {
     RandomWalkResult result;
     std::random_device rd;
     std::mt19937 gen(rd());
+    std::uniform_real_distribution<> stop_dis(0.0, 1.0);
 
     // Get all starting nodes
     std::vector<int> nodes;
@@ -274,7 +275,7 @@ RandomWalkResult generate_random_walks_directed_weighted(
             int current = start_node;
             walk.push_back(current);
 
-            for (int j = 0; j < walk_length; j++) {
+            while (stop_dis(gen) >= epsilon) {
                 int next = 0;
                 if (!try_sample_weighted_successor(weighted_transitions, current, gen, next))
                     break;
@@ -294,14 +295,14 @@ RandomWalkResult generate_random_walks_directed_weighted(
 RandomWalkResult generate_random_walks_directed_weighted(
     const Graph_& weighted_graph,
     int walks_per_node,
-    int walk_length
+    double epsilon
 ) {
     WeightedTransitionLookup weighted_transitions = build_weighted_transition_lookup(weighted_graph);
     return generate_random_walks_directed_weighted(
         weighted_graph,
         weighted_transitions,
         walks_per_node,
-        walk_length
+        epsilon
     );
 }
 
@@ -313,13 +314,14 @@ RandomWalkResult update_random_walks_directed_with_weights(
     std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
     const GraphChanges& changes,
     int num_walks,
-    int walk_length
+    double epsilon
 ) {
     RandomWalkResult result;
 
     using RNG = std::mt19937;
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
     RNG rng(seed);
+    std::uniform_real_distribution<> stop_dis(0.0, 1.0);
 
     // Handle removed nodes
     for (int node : changes.nodes_removed) {
@@ -333,7 +335,7 @@ RandomWalkResult update_random_walks_directed_with_weights(
             std::vector<int> walk = {node};
             int current = node;
 
-            for (int j = 0; j < walk_length; ++j) {
+            while (stop_dis(rng) >= epsilon) {
                 int next = 0;
                 if (!try_sample_weighted_successor(weighted_transitions, current, rng, next))
                     break;
@@ -359,10 +361,10 @@ RandomWalkResult update_random_walks_directed_with_weights(
         }
     }
 
-    // Extend all truncated or too-short walks
+    // Extend truncated walks until the next restart check fires.
     for (auto& [node, walks] : precomputed_walks) {
         for (auto& walk : walks) {
-            while (walk.size() < static_cast<size_t>(walk_length + 1)) {
+            while (stop_dis(rng) >= epsilon) {
                 int last = walk.back();
                 int next = 0;
                 if (!try_sample_weighted_successor(weighted_transitions, last, rng, next))
@@ -383,7 +385,7 @@ RandomWalkResult update_random_walks_directed_with_weights(
     std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
     const GraphChanges& changes,
     int num_walks,
-    int walk_length
+    double epsilon
 ) {
     WeightedTransitionLookup weighted_transitions = build_weighted_transition_lookup(graph);
     return update_random_walks_directed_with_weights(
@@ -391,7 +393,7 @@ RandomWalkResult update_random_walks_directed_with_weights(
         precomputed_walks,
         changes,
         num_walks,
-        walk_length
+        epsilon
     );
 }
 
@@ -703,8 +705,6 @@ TopKSummaryWithWeights generate_top_k_summary(
         int L = calculate_required_walk_length(c, epsilon, k, n);
 
 
-        int walk_length = 5;
-
         // Reuse the personalized snapshot directly to avoid another full graph copy.
         const Graph_& weighted_graph = graph_changes_result.snapshot;
 
@@ -712,13 +712,13 @@ TopKSummaryWithWeights generate_top_k_summary(
         RandomWalkResult R;
         if (t == 0) {
     
-            R = generate_random_walks_directed_weighted(weighted_graph, num_walks, walk_length);
+            R = generate_random_walks_directed_weighted(weighted_graph, num_walks, epsilon);
             summary.random_walks[0] = R;
 
 
         } else {
 
-            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[0].precomputed_walks, summary.changes_over_time[t], num_walks, walk_length);
+            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[0].precomputed_walks, summary.changes_over_time[t], num_walks, epsilon);
             summary.random_walks[0] = R;
         }
         auto end = chrono::high_resolution_clock::now();
@@ -1018,8 +1018,6 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
     }
     int L = calculate_required_walk_length(c, epsilon, k, n);
 
-    int walk_length = 5;
-
     auto start = chrono::high_resolution_clock::now();
     RandomWalkResult R;
     WeightedTransitionLookup weighted_transitions_storage;
@@ -1034,7 +1032,7 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
             weighted_graph,
             *weighted_transitions,
             num_walks,
-            walk_length
+            epsilon
         );
         summary.random_walks[0] = R;
         cumCounts.clear();
@@ -1045,7 +1043,7 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
             summary.random_walks[0].precomputed_walks,
             summary.changes_over_time[t],
             num_walks,
-            walk_length
+            epsilon
         );
         summary.random_walks[0] = R;
     }
