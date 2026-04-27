@@ -17,7 +17,7 @@ from src.progress import format_bytes, format_seconds, progress, progress_write
 
 
 EDGE_WEIGHT = 0.01
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 CACHE_DIR_NAME = ".sankofa_cache"
 CACHE_LOCK_FILE_NAME = ".sankofa_cache.lock"
 MANIFEST_FILE = "manifest.json"
