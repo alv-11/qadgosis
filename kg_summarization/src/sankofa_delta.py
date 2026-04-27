@@ -458,6 +458,7 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         )
 
         current_graph = next_graph
+        current_triples = next_triples
 
     manifest_path = cache_dir / MANIFEST_FILE
     with manifest_path.open("w", encoding="utf-8") as handle:
