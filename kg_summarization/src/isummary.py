@@ -310,10 +310,15 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
 
     
     for i, (entity, freq) in enumerate(entity_freq.most_common()):
-        if len(all_summary_triples) >= target_triples:
+        remaining_budget = target_triples - len(all_summary_triples)
+
+        if remaining_budget <= 0:
             break
             
-        entity_share = max(1000, int((freq / total_freq) * target_triples))
+        entity_share = min(
+            remaining_budget,
+            max(1000, int((freq / total_freq) * target_triples)),
+        )
         
 
         try:

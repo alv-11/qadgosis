@@ -539,6 +539,56 @@ def _log_sankofa_summary(timestep, summary):
     progress_write(f"Sankofa summary t={timestep}: {summary.summary_overview()}")
 
 
+def _summary_triple_count(summary):
+    if summary is None:
+        return None
+
+    number_of_triples = getattr(summary, "number_of_triples", None)
+    if callable(number_of_triples):
+        try:
+            return int(number_of_triples())
+        except Exception:
+            pass
+
+    triple_count = getattr(summary, "triple_count", None)
+    if triple_count is not None:
+        try:
+            return int(triple_count)
+        except Exception:
+            pass
+
+    triples = getattr(summary, "triples_", None)
+    if isinstance(triples, dict):
+        count = 0
+        for predicates in triples.values():
+            if not isinstance(predicates, dict):
+                continue
+            for objects in predicates.values():
+                try:
+                    count += len(objects)
+                except TypeError:
+                    continue
+        return count
+
+    return None
+
+
+def _log_baseline_summary_size(method_name, timestep, summary, requested_size=None):
+    method_label = _baseline_label(method_name)
+    summary_size = _summary_triple_count(summary)
+    requested_suffix = "" if requested_size is None else f" requested_size={requested_size}"
+
+    if summary_size is None:
+        progress_write(
+            f"Baseline {method_label} t={timestep}: summary_size=unknown{requested_suffix}"
+        )
+        return
+
+    progress_write(
+        f"Baseline {method_label} t={timestep}: summary_size={summary_size}{requested_suffix}"
+    )
+
+
 
 
 METHODS = { 
@@ -547,7 +597,8 @@ METHODS = {
     'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
     'hhop_random': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM', h=2, neighborhood_mode='both'),
     'hhop_random_outgoing': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM_OUTGOING', h=2, neighborhood_mode='outgoing_only'),
-    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=2, seed_mode="answers_fallback_topic"),
+    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=2),
+
 }
 
 
@@ -671,6 +722,8 @@ def _evaluate_stateless_baseline(summary_method, method_name, KG, t, K, training
     t0 = time.time()
     summary = summary_method(KG, K, merged_logs)
     run_time = time.time() - t0
+
+    _log_baseline_summary_size(method_name, t, summary, requested_size=K)
 
     total_F1, _, _ = total_query_log_metrics(summary, test_data[t])
     present_row = {
@@ -882,6 +935,8 @@ def run_apex(graphs, triples_no_mc, training_data, test_data, weights, method_na
                 #fallback to full call if incremental fails
                 P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
         #total_F1, run_time, P = APEX_(KG, K,  training_data[t], test_data[t], t=t)
+
+        _log_baseline_summary_size(method_name, t, P, requested_size=K)
 
         apex_rows.append({"Timestep": t, _present_col(method_label): total_F1, "Runtime (seconds)": run_time})
         df_w = process_all_timesteps(training_set=test_data, summary=P, i=t, test_weights=_normalize_weights(test_w))
@@ -1548,6 +1603,7 @@ class BaselineEngine:
             #    P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
             #        apex_KG, K, training_data[t], test_data[t], t=t
             #    )
+        _log_baseline_summary_size(method_name, t, P, requested_size=K)
         progress_write(
                 "Updating APEX state"
             )
