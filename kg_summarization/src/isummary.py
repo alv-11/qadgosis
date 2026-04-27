@@ -49,14 +49,20 @@ def extract_entities_from_query(q):
     return entities
 
 
-def filter_queries_by_entities(Q, entities):
-    """Filter queries that mention any of the given entities."""
+def filter_queries_by_entities(Q, entities, require_all=False):
+    """Filter queries that mention any or all of the given entities."""
     filtered = []
     target_entities = set(map(str, entities))
+
+    if not target_entities:
+        return filtered
     
     for q in Q:
         q_entities = extract_entities_from_query(q)
-        if target_entities & q_entities:
+        if require_all:
+            if target_entities <= q_entities:
+                filtered.append(q)
+        elif target_entities & q_entities:
             filtered.append(q)
     
     return filtered
@@ -77,21 +83,65 @@ def select_top_nodes(Qs, max_nodes=None):
         return [node for node, freq in node_freq.most_common() if freq > 0]
 
 
-def get_shortest_path_between(G, nodes):
-    """Find shortest path between any two nodes in the set."""
-    nodes_list = list(nodes)
-    if len(nodes_list) < 2:
+def build_predicate_graph(KG):
+    """Build a directed graph view of the KG for path-based summarization."""
+    G = nx.DiGraph()
+    for s_kg, preds in KG.triples_.items():
+        s_str = str(s_kg)
+        for p, objs in preds.items():
+            for o in objs:
+                o_str = str(o)
+                G.add_edge(s_str, o_str, predicate=p)
+    return G
+
+
+def get_shortest_path_between(G, source, target, allowed_nodes=None):
+    """Find the shortest path between explicit endpoints.
+
+    When allowed_nodes is provided, the search is restricted to the induced
+    subgraph over those nodes plus the requested endpoints.
+    """
+    source = str(source)
+    target = str(target)
+
+    if source == target:
+        return [source] if G.has_node(source) else []
+
+    if allowed_nodes is None:
+        if not G.has_node(source) or not G.has_node(target):
+            return []
+        search_graph = G
+    else:
+        valid_nodes = {str(node) for node in allowed_nodes if G.has_node(str(node))}
+        valid_nodes.update((source, target))
+
+        if source not in valid_nodes or target not in valid_nodes:
+            return []
+
+        search_graph = G.subgraph(valid_nodes)
+
+    if not search_graph.has_node(source) or not search_graph.has_node(target):
         return []
-    
-    # Try all pairs to find a path
-    for i in range(len(nodes_list)):
-        for j in range(i + 1, len(nodes_list)):
-            try:
-                if nx.has_path(G, nodes_list[i], nodes_list[j]):
-                    return nx.shortest_path(G, nodes_list[i], nodes_list[j])
-            except nx.NetworkXNoPath:
-                continue
-    return []
+
+    best_path = None
+
+    for start, end in ((source, target), (target, source)):
+        try:
+            candidate_path = nx.shortest_path(search_graph, source=start, target=end)
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            continue
+
+        if (
+            best_path is None
+            or len(candidate_path) < len(best_path)
+            or (
+                len(candidate_path) == len(best_path)
+                and tuple(candidate_path) < tuple(best_path)
+            )
+        ):
+            best_path = candidate_path
+
+    return best_path or []
 
 
 def find_most_frequent_path(paths):
@@ -103,8 +153,12 @@ def find_most_frequent_path(paths):
     for path in paths:
         path_tuple = tuple(path)
         path_counts[path_tuple] += 1
-    
-    return list(path_counts.most_common(1)[0][0])
+
+    ranked_paths = sorted(
+        path_counts.items(),
+        key=lambda item: (-item[1], len(item[0]), item[0]),
+    )
+    return list(ranked_paths[0][0])
 
 
 def resolve_path_to_triples(G, path):
@@ -118,82 +172,102 @@ def resolve_path_to_triples(G, path):
     return triples
 
 
-def build_isummary_with_target_size(KG, query_log, s, target_triples):
+def build_isummary_with_target_size(KG, query_log, s, target_triples, graph=None):
     """
    iSummary that grows summary until reaching target triple count.
     This is a departure from the original k-node approach.
     """    
     S = set()
-    visited = {str(s)}
-    
-    # Filter queries mentioning s
-    Qs = filter_queries_by_entities(query_log, [s])
-    
-    if not Qs:
-        return S
-   
-    G = nx.DiGraph()
-    for s_kg, preds in KG.triples_.items():
-        s_str = str(s_kg)
-        for p, objs in preds.items():
-            for o in objs:
-                o_str = str(o)
-                G.add_edge(s_str, o_str, predicate=p)
-    
-    # Instead of fixed k, we'll process nodes until we reach target size
-    candidate_nodes = select_top_nodes(Qs, max_nodes=50)  
 
-    
+    if target_triples <= 0:
+        return S
+
+    seed = str(s)
+    G = graph if graph is not None else build_predicate_graph(KG)
+
+    if not G.has_node(seed):
+        return S
+
+    visited = {seed}
+    query_entities_cache = []
+    query_indices_by_entity = defaultdict(set)
+    node_freq = Counter()
+
+    for q in query_log:
+        q_entities = {
+            str(entity)
+            for entity in extract_entities_from_query(q)
+            if G.has_node(str(entity))
+        }
+
+        if seed not in q_entities:
+            continue
+
+        query_index = len(query_entities_cache)
+        query_entities_cache.append(q_entities)
+
+        for entity in q_entities:
+            query_indices_by_entity[entity].add(query_index)
+            if entity != seed:
+                node_freq[entity] += 1
+
+    if not query_entities_cache:
+        return S
+
+    candidate_nodes = [
+        node
+        for node, freq in sorted(
+            node_freq.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+        if freq > 0
+    ]
+
     # Process nodes until we reach target size or run out of candidates
     for x in candidate_nodes:
-        if x in visited:
-            continue
-            
         if len(S) >= target_triples:
             break
-            
-        selected_path = []
-        all_paths = []
-        
 
-        for y in list(visited):
-            Qsxy = filter_queries_by_entities(Qs, [x, y])
-            
-            if not Qsxy:
+        all_paths = []
+        x_query_indices = query_indices_by_entity.get(x)
+
+        if not x_query_indices:
+            continue
+
+        for y in sorted(visited):
+            y_query_indices = query_indices_by_entity.get(y)
+
+            if not y_query_indices:
                 continue
-                
-            # For each query, get shortest path
-            paths_for_pair = []
-            for q in Qsxy:
-                q_entities = extract_entities_from_query(q)
-                q_entities.add(x)
-                q_entities.add(y)
-                
-                path = get_shortest_path_between(G, q_entities)
+
+            # For each relevant query, get the shortest path linking x and y.
+            for query_index in x_query_indices & y_query_indices:
+                q_entities = query_entities_cache[query_index]
+                path = get_shortest_path_between(G, x, y, allowed_nodes=q_entities)
                 if path:
-                    paths_for_pair.append(path)
-            
-            # Find most frequent path for this pair
-            if paths_for_pair:
-                most_freq_path = find_most_frequent_path(paths_for_pair)
-                if most_freq_path and (not selected_path or len(most_freq_path) < len(selected_path)):
-                    selected_path = most_freq_path
-        
+                    all_paths.append(path)
+
         # Add path to summary if found
-        if selected_path:
-            visited.add(x)
-            path_triples = resolve_path_to_triples(G, selected_path)
-            
-            # Check if adding these triples would exceed our target
-            if len(S) + len(path_triples) > target_triples:
-                remaining = target_triples - len(S)
-                if remaining > 0:
-                    # Take first 'remaining' triples from the path
-                    triples_to_add = set(list(path_triples)[:remaining])
-                    S.update(triples_to_add)
-                break
-            else:
-                S.update(path_triples)
+        if not all_paths:
+            continue
+
+        selected_path = find_most_frequent_path(all_paths)
+        path_triples = resolve_path_to_triples(G, selected_path)
+
+        if not path_triples:
+            continue
+
+        visited.add(x)
+
+        # Check if adding these triples would exceed our target
+        if len(S) + len(path_triples) > target_triples:
+            remaining = target_triples - len(S)
+            if remaining > 0:
+                triples_to_add = set(sorted(path_triples)[:remaining])
+                S.update(triples_to_add)
+            break
+
+        S.update(path_triples)
     return S
 
 
@@ -209,19 +283,10 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
     
     #print(f"\n[INFO] Found {len(all_query_entities)} unique entities in queries")
     
-    # Build graph once to check node existence
-    G = nx.DiGraph()
-    for s_kg, preds in KG.triples_.items():
-        s_str = str(s_kg)
-        for p, objs in preds.items():
-            for o in objs:
-                o_str = str(o)
-                G.add_edge(s_str, o_str, predicate=p)
-    
-    # Filter entities that exist in KG AND in the graph we built
+    # Filter entities that exist anywhere in the KG, including object positions.
     valid_entities = []
     for entity in all_query_entities:
-        if entity in G:
+        if KG.has_entity(entity):
             valid_entities.append(entity)
         else:
             pass
@@ -229,6 +294,8 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
     
     if not valid_entities:
         return set()
+
+    G = build_predicate_graph(KG)
     
     # Calculate target size per entity
     entity_freq = Counter()
@@ -250,7 +317,13 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
         
 
         try:
-            entity_summary = build_isummary_with_target_size(KG, query_log, entity, entity_share)
+            entity_summary = build_isummary_with_target_size(
+                KG,
+                query_log,
+                entity,
+                entity_share,
+                graph=G,
+            )
             all_summary_triples.update(entity_summary)
         except Exception as e:
             continue
@@ -261,24 +334,17 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
 
 
 
-def build_local_structure(KG, entity, target_triples):
+def build_local_structure(KG, entity, target_triples, graph=None):
     """Build local structure around an entity when queries don't provide enough."""
     S = set()
-    G = nx.DiGraph()
+    entity_str = str(entity)
     
-    # Build local graph
-    for s_kg, preds in KG.triples_.items():
-        s_str = str(s_kg)
-        for p, objs in preds.items():
-            for o in objs:
-                o_str = str(o)
-                G.add_edge(s_str, o_str, predicate=p)
-    
-    if entity not in G:
+    if not KG.has_entity(entity_str):
         return S
+
+    G = graph if graph is not None else build_predicate_graph(KG)
     
     # Add immediate neighbors
-    entity_str = str(entity)
     neighbors = list(G.successors(entity_str)) + list(G.predecessors(entity_str))
     
     for neighbor in neighbors[:target_triples * 2]:  # Get more neighbors than needed
