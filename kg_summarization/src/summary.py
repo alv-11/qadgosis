@@ -547,8 +547,7 @@ METHODS = {
     'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
     'hhop_random': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM', h=2, neighborhood_mode='both'),
     'hhop_random_outgoing': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM_OUTGOING', h=2, neighborhood_mode='outgoing_only'),
-    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=5),
-
+    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=2, seed_mode="answers_fallback_topic"),
 }
 
 
