@@ -37,7 +37,7 @@ def query_vector(KG, query_log, seed_mode="topic_only"):
     """
     x = np.zeros(KG.number_of_entities())
 
-    if seed_mode == "topic_only": #old code, only topic entity as seed
+    if seed_mode == "topic_only": #old mode, only topic entity as seed
         for query in query_log:
             parse = query["Parse"]
             try:

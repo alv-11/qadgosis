@@ -678,27 +678,39 @@ def sliding_window(window_size=2, training_set=None, summary=None, i=None, test_
     return pd.DataFrame(data)
 
 
-def process_all_timesteps(training_set=None, summary=None, i=None, test_weights=None):
+def process_all_timesteps(training_set=None, summary=None, i=None, test_weights=None, include_current=True):
     if training_set is None or test_weights is None:
         print("Error: training_set and test_weights must be provided.")
         return None
 
-    output_data = []
     data = []
     timesteps = sorted(training_set.keys())
 
+    # Keep only past-timestep weights (and optionally the current one) and
+    # renormalize so they sum to 1.  The incoming test_weights were normalized
+    # over all timesteps including the current one, which would under-sample
+    # past queries if we excluded it without renormalizing.
+    cutoff = (lambda t: t <= i) if include_current else (lambda t: t < i)
+    past_w_raw = {t: test_weights[t] for t in timesteps if cutoff(t) and t in test_weights}
+    past_total = sum(past_w_raw.values())
+    past_weights = {t: v / past_total for t, v in past_w_raw.items()} if past_total > 0 else {}
+
     for t in timesteps:
-        if t in test_weights:
-            sampled_data = np.random.choice(training_set[t], size=int(len(training_set[t]) * test_weights[t]), replace=False)
-            sampled_data = [q for q in sampled_data if isinstance(q, dict) and 'Parse' in q]
-            if not sampled_data:
-                continue
-            data.extend(sampled_data)
+        if t not in past_weights:
+            continue
+        sampled_data = np.random.choice(training_set[t], size=int(len(training_set[t]) * past_weights[t]), replace=False)
+        sampled_data = [q for q in sampled_data if isinstance(q, dict) and 'Parse' in q]
+        if not sampled_data:
+            continue
+        data.extend(sampled_data)
+
+    if not data:
+        # No past timesteps to evaluate (e.g. first timestep)
+        return pd.DataFrame([{"Timestep Window": f"{i}", "Total F1": float("nan")}])
 
     data = list(flatten_list(data))
     total_F1, _, _ = total_query_log_metrics(summary, data)
-    output_data.append({"Timestep Window": f"{i}", "Total F1": total_F1})
-    return pd.DataFrame(output_data)
+    return pd.DataFrame([{"Timestep Window": f"{i}", "Total F1": total_F1}])
 
 
 ##########################
