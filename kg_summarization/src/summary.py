@@ -785,7 +785,7 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
     """
     Fully restored Sankofa processing:
     - Computes Future Test F1
-    - Computes Weighted Future Test F1 (never NA)
+    - Computes Past Unseen Query F1 (never NA)
     - Computes runtime (walks + summary)
     """
 
@@ -845,15 +845,15 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
     df_future = pd.DataFrame(future_rows)
     df_summary_rt = pd.DataFrame(summary_runtime_rows)
 
-    # Weighted Future Test F1
+    # Past Unseen Query F1
     if len(weighted_tests) > 0:
         df_weighted = pd.concat(weighted_tests, ignore_index=True)
         df_weighted = df_weighted.rename(columns={
             "Timestep Window": "Timestep",
-            "Total F1": "Weighted Future Test F1"
+            "Total F1": "Past Unseen Query F1"
         })
     else:
-        df_weighted = pd.DataFrame(columns=["Timestep", "Weighted Future Test F1"])
+        df_weighted = pd.DataFrame(columns=["Timestep", "Past Unseen Query F1"])
 
 
     for df in (df_future, df_summary_rt, df_weighted):
@@ -873,7 +873,7 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
     merged = merged.merge(df_weighted, on="Timestep", how="left")
 
     # 
-    merged["Weighted Future Test F1"] = merged["Weighted Future Test F1"].fillna(0.0)
+    merged["Past Unseen Query F1"] = merged["Past Unseen Query F1"].fillna(0.0)
 
     # TOTAL RUNTIME 
     merged["Runtime (seconds)"] = (
@@ -886,7 +886,7 @@ def process_summary_sankofa(top_k_nodes_dict,  graphs, label, weights, global_pr
         "Timestep",
         "Runtime (seconds)",
         "Future Test F1",
-        "Weighted Future Test F1"
+        "Past Unseen Query F1"
     ]].copy()
 
     sankofa.to_csv("sankofa_results.csv", index=False)
@@ -1409,11 +1409,11 @@ def process_summary_sankofa_streaming(
         df_weighted = pd.concat(weighted_tests, ignore_index=True)
         df_weighted = df_weighted.rename(columns={
             "Timestep Window": "Timestep",
-            "Total F1": "Weighted Future Test F1"
+            "Total F1": "Past Unseen Query F1"
         })
     else:
         df_weighted = pd.DataFrame(columns=[
-            "Timestep", "Weighted Future Test F1"
+            "Timestep", "Past Unseen Query F1"
         ])
 
     for df in (df_future, df_summary_rt, df_weighted):
@@ -1434,7 +1434,7 @@ def process_summary_sankofa_streaming(
     merged = merged.merge(df_future, on="Timestep", how="left")
     merged = merged.merge(df_weighted, on="Timestep", how="left")
 
-    merged["Weighted Future Test F1"] = merged["Weighted Future Test F1"].fillna(0.0)
+    merged["Past Unseen Query F1"] = merged["Past Unseen Query F1"].fillna(0.0)
 
     merged["Runtime (seconds)"] = (
         merged["Runtime (summary)"].fillna(0.0) +
@@ -1445,7 +1445,7 @@ def process_summary_sankofa_streaming(
         "Timestep",
         "Runtime (seconds)",
         "Future Test F1",
-        "Weighted Future Test F1"
+        "Past Unseen Query F1"
     ]].copy()
 
     if verbose:
@@ -1493,7 +1493,7 @@ def evaluate_sankofa_timestep(
             "Timestep": int(timestep),
             "Runtime (seconds)": summary_runtime + walk_seconds,
             "Future Test F1": total_F1,
-            "Weighted Future Test F1": weighted_future_f1,
+            "Past Unseen Query F1": weighted_future_f1,
         }
     ])
     composition_row = pd.DataFrame([summary.composition_stats(timestep)])

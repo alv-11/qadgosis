@@ -4,13 +4,14 @@ import os
 DEFAULT_MAIN_RUNTIME_SETTINGS = {
     "num_walks": 20,
     "c": 2,
-    "epsilon": 0.90,
+    "epsilon": 0.9,
     "decay_rate": 0.8,
-    "window_size": 3,
-    "budget_ratio": 0.00001,
+    "window_size": 5,
+    "budget_ratio": 0.00005,
     "baseline_methods": [],#["glimpse","apex","isummary"],#, "hhop_random", "hhop_random_outgoing", "ppr_frequency"],
     "log_changes_in_topk": False,
     "seed_mode": "topic_only", #answers_fallback_topic
+    "eval_decay_rate": 0.8,
 }
 
 MAIN_RUNTIME_ENV_VARS = {
@@ -23,6 +24,7 @@ MAIN_RUNTIME_ENV_VARS = {
     "baseline_methods": "QADGOSIS_BASELINE_METHODS",
     "log_changes_in_topk": "QADGOSIS_LOG_CHANGES_IN_TOPK",
     "seed_mode": "QADGOSIS_SEED_MODE",
+    "eval_decay_rate": "QADGOSIS_EVAL_DECAY_RATE",
 }
 
 DEFAULT_QUERY_GENERATION_SETTINGS = {
@@ -114,6 +116,12 @@ def resolve_main_runtime_settings(env=None):
             DEFAULT_MAIN_RUNTIME_SETTINGS["seed_mode"],
             str,
         ),
+        "eval_decay_rate": _resolve_scalar(
+            env,
+            MAIN_RUNTIME_ENV_VARS["eval_decay_rate"],
+            DEFAULT_MAIN_RUNTIME_SETTINGS["eval_decay_rate"],
+            float,
+        ),
     }
 
 
@@ -164,6 +172,7 @@ def main_runtime_settings_to_env(settings):
         MAIN_RUNTIME_ENV_VARS["baseline_methods"]: ",".join(settings["baseline_methods"]),
         MAIN_RUNTIME_ENV_VARS["log_changes_in_topk"]: "1" if settings["log_changes_in_topk"] else "0",
         MAIN_RUNTIME_ENV_VARS["seed_mode"]: settings["seed_mode"],
+        MAIN_RUNTIME_ENV_VARS["eval_decay_rate"]: str(settings["eval_decay_rate"]),
     }
 
 

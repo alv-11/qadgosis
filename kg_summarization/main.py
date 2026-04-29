@@ -51,6 +51,14 @@ def resolve_subgraph_dir():
 def live_progress_enabled():
     return os.environ.get("QADGOSIS_LIVE_RUN_PROGRESS") == "1"
 
+
+def compute_eval_weights(timestep, all_timesteps, eval_decay_rate):
+    """Decay weights over all past timesteps for evaluation (independent of Sankofa window)."""
+    return {
+        t: eval_decay_rate ** (timestep - t)
+        for t in all_timesteps
+        if t < timestep
+    }
 def build_changes_dataframe(changes_over_time, queries_):
     rows = []
 
@@ -289,7 +297,7 @@ def main():
             evaluation_graph,
             top_k_nodes,
             test_data,
-            weights=results.get("all_weights", {}).get(t, {}),
+            weights=compute_eval_weights(t, sorted(test_data.keys()), runtime_settings["eval_decay_rate"]),
             global_pr=results.get("global_pr", {}).get(t, {}),
             max_triples=summary_size,
             walk_runtime=step_runtime,
@@ -309,7 +317,7 @@ def main():
             K=sankofa_triples,
             training_data=training_data,
             test_data=test_data,
-            weights=results.get("all_weights", {}).get(t, {}),
+            weights=compute_eval_weights(t, sorted(test_data.keys()), runtime_settings["eval_decay_rate"]),
             graph_delta=incoming_triple_delta,
             progress_prefix=step_label,
         )
