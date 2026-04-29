@@ -176,7 +176,8 @@ def main():
 
     progress_write("Preparing queries...")
     training_data, test_data, queries_, snapshot_files = \
-        prepare_queries_and_splits(subgraph_dir, query_bundle_index=query_bundle_index)
+        prepare_queries_and_splits(subgraph_dir, query_bundle_index=query_bundle_index,
+                                   seed_mode=runtime_settings["seed_mode"])
 
     total_timesteps = len(snapshot_files)
 
@@ -374,9 +375,10 @@ def main():
     sankofa_summary_composition = pd.concat(sankofa_summary_composition_rows, ignore_index=True)
     sankofa.to_csv(output_path("sankofa_results.csv"), index=False)
     sankofa_summary_composition.to_csv(output_path("sankofa_summary_composition.csv"), index=False)
-    with output_path("changes_in_topk.json").open("w", encoding="utf-8") as f:
-        json.dump(changes_in_topk, f, indent=4)
-    df_changes.to_csv(output_path("changes_in_topk.csv"), index=False)
+    if runtime_settings["log_changes_in_topk"]:
+        with output_path("changes_in_topk.json").open("w", encoding="utf-8") as f:
+            json.dump(changes_in_topk, f, indent=4)
+        df_changes.to_csv(output_path("changes_in_topk.csv"), index=False)
 
     sota = baseline_engine.finalize()
 
@@ -413,8 +415,8 @@ def main():
                 "queries": str(output_path("queries.json")),
                 "sankofa_results": str(output_path("sankofa_results.csv")),
                 "sankofa_summary_composition": str(output_path("sankofa_summary_composition.csv")),
-                "changes_in_topk_json": str(output_path("changes_in_topk.json")),
-                "changes_in_topk_csv": str(output_path("changes_in_topk.csv")),
+                "changes_in_topk_json": str(output_path("changes_in_topk.json")) if runtime_settings["log_changes_in_topk"] else None,
+                "changes_in_topk_csv": str(output_path("changes_in_topk.csv")) if runtime_settings["log_changes_in_topk"] else None,
                 "all_results": str(output_path("all_results.csv")) if not sota.empty else None,
             },
             "cache_dir": str(cache.cache_dir),

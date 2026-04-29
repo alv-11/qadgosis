@@ -76,7 +76,7 @@ def PR(KG, K, query_log, query_num_per_test=1, power=1, seed_mode="topic_only"):
     return P
 
 
-def PPR_FREQUENCY(KG, K, query_log, n=5, seed_mode="answers_fallback_topic"):
+def PPR_FREQUENCY(KG, K, query_log, n=2, seed_mode="topic_only"):
     return PR(KG, K, query_log, power=n, seed_mode=seed_mode)
             
 

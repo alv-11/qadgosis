@@ -607,8 +607,8 @@ TopKResult calculate_top_k_cumulative_with_weights(
 
 
         double alpha = epsilon;
-        double weight = (1.0 - alpha) * puv + alpha * pv;
-        
+        //double weight = (1.0 - alpha) * puv + alpha * pv;
+        double weight = (alpha) * puv + (1.0-alpha) * pv;
         
         
         //double weight = pi_uv_norm[node] ;

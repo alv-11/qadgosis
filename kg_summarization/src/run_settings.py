@@ -2,13 +2,15 @@ import os
 
 
 DEFAULT_MAIN_RUNTIME_SETTINGS = {
-    "num_walks": 5,
+    "num_walks": 20,
     "c": 2,
-    "epsilon": 0.25,
-    "decay_rate": 0.03,
-    "window_size": 5,
-    "budget_ratio": 0.005,
-    "baseline_methods": ["glimpse", "apex", "isummary", "hhop_random", "hhop_random_outgoing"],
+    "epsilon": 0.90,
+    "decay_rate": 0.8,
+    "window_size": 3,
+    "budget_ratio": 0.00001,
+    "baseline_methods": [],#["glimpse","apex","isummary"],#, "hhop_random", "hhop_random_outgoing", "ppr_frequency"],
+    "log_changes_in_topk": False,
+    "seed_mode": "topic_only", #answers_fallback_topic
 }
 
 MAIN_RUNTIME_ENV_VARS = {
@@ -19,6 +21,8 @@ MAIN_RUNTIME_ENV_VARS = {
     "window_size": "QADGOSIS_WINDOW_SIZE",
     "budget_ratio": "QADGOSIS_BUDGET_RATIO",
     "baseline_methods": "QADGOSIS_BASELINE_METHODS",
+    "log_changes_in_topk": "QADGOSIS_LOG_CHANGES_IN_TOPK",
+    "seed_mode": "QADGOSIS_SEED_MODE",
 }
 
 DEFAULT_QUERY_GENERATION_SETTINGS = {
@@ -26,7 +30,7 @@ DEFAULT_QUERY_GENERATION_SETTINGS = {
     "topic_change_ratio": 0.4,
     "num_queries": 200,
     "shuffle": True,
-    "random_query_prob": 0.0,
+    "random_query_prob": 0.1,
 }
 
 QUERY_GENERATION_ENV_VARS = {
@@ -98,6 +102,18 @@ def resolve_main_runtime_settings(env=None):
             list(DEFAULT_MAIN_RUNTIME_SETTINGS["baseline_methods"]),
             _parse_string_list,
         ),
+        "log_changes_in_topk": _resolve_scalar(
+            env,
+            MAIN_RUNTIME_ENV_VARS["log_changes_in_topk"],
+            DEFAULT_MAIN_RUNTIME_SETTINGS["log_changes_in_topk"],
+            _parse_bool,
+        ),
+        "seed_mode": _resolve_scalar(
+            env,
+            MAIN_RUNTIME_ENV_VARS["seed_mode"],
+            DEFAULT_MAIN_RUNTIME_SETTINGS["seed_mode"],
+            str,
+        ),
     }
 
 
@@ -146,6 +162,8 @@ def main_runtime_settings_to_env(settings):
         MAIN_RUNTIME_ENV_VARS["window_size"]: str(settings["window_size"]),
         MAIN_RUNTIME_ENV_VARS["budget_ratio"]: str(settings["budget_ratio"]),
         MAIN_RUNTIME_ENV_VARS["baseline_methods"]: ",".join(settings["baseline_methods"]),
+        MAIN_RUNTIME_ENV_VARS["log_changes_in_topk"]: "1" if settings["log_changes_in_topk"] else "0",
+        MAIN_RUNTIME_ENV_VARS["seed_mode"]: settings["seed_mode"],
     }
 
 

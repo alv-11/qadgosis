@@ -44,11 +44,16 @@ def _is_numeric_entity_id(value):
     return value is not None and str(value).isdigit()
 
 
-def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=False):
+def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=False, seed_mode="answers_fallback_topic"):
     """Return Sankofa seed nodes and how they were derived."""
     parse = query.get("Parse", {}) if isinstance(query, dict) else {}
     answers = parse.get("Answers", [])
     topic_entity = parse.get("TopicEntityMid")
+
+    if seed_mode == "topic_only":
+        if topic_entity is not None:
+            return [topic_entity], "topic_fallback"
+        return [], "empty"
 
     seed_nodes = []
     numeric_seed_nodes = []
@@ -77,7 +82,7 @@ def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=F
     return [], "empty"
 
 
-def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, return_stats=False):
+def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, return_stats=False, seed_mode="answers_fallback_topic"):
     seed_nodes = []
     stats = {
         "query_count": 0,
@@ -92,6 +97,7 @@ def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, retu
         query_seed_nodes, source = _extract_seed_nodes_from_query_with_source(
             query,
             allow_numeric_answers=allow_numeric_answers,
+            seed_mode=seed_mode,
         )
         stats["query_count"] += 1
         stats["seed_node_count"] += len(query_seed_nodes)
@@ -128,7 +134,7 @@ def _log_query_seed_resolution(bundle_dir, timestep, file_name, seed_stats):
 
     if seed_stats["topic_fallback_queries"] > 0:
         progress_write(
-            f"Query logs: evaluation seed fallback used TopicEntityMid for "
+            f"Query logs: Using TopicEntityMid seeding for "
             f"{seed_stats['topic_fallback_queries']}/{query_count} training queries "
             f"in {bundle_dir.name} snapshot {timestep} ({file_name}) because no answer-derived seeds were available."
         )
@@ -539,6 +545,56 @@ def _log_sankofa_summary(timestep, summary):
     progress_write(f"Sankofa summary t={timestep}: {summary.summary_overview()}")
 
 
+def _summary_triple_count(summary):
+    if summary is None:
+        return None
+
+    number_of_triples = getattr(summary, "number_of_triples", None)
+    if callable(number_of_triples):
+        try:
+            return int(number_of_triples())
+        except Exception:
+            pass
+
+    triple_count = getattr(summary, "triple_count", None)
+    if triple_count is not None:
+        try:
+            return int(triple_count)
+        except Exception:
+            pass
+
+    triples = getattr(summary, "triples_", None)
+    if isinstance(triples, dict):
+        count = 0
+        for predicates in triples.values():
+            if not isinstance(predicates, dict):
+                continue
+            for objects in predicates.values():
+                try:
+                    count += len(objects)
+                except TypeError:
+                    continue
+        return count
+
+    return None
+
+
+def _log_baseline_summary_size(method_name, timestep, summary, requested_size=None):
+    method_label = _baseline_label(method_name)
+    summary_size = _summary_triple_count(summary)
+    requested_suffix = "" if requested_size is None else f" requested_size={requested_size}"
+
+    if summary_size is None:
+        progress_write(
+            f"Baseline {method_label} t={timestep}: summary_size=unknown{requested_suffix}"
+        )
+        return
+
+    progress_write(
+        f"Baseline {method_label} t={timestep}: summary_size={summary_size}{requested_suffix}"
+    )
+
+
 
 
 METHODS = { 
@@ -547,7 +603,7 @@ METHODS = {
     'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
     'hhop_random': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM', h=2, neighborhood_mode='both'),
     'hhop_random_outgoing': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM_OUTGOING', h=2, neighborhood_mode='outgoing_only'),
-    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=5),
+    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=2),
 
 }
 
@@ -628,27 +684,39 @@ def sliding_window(window_size=2, training_set=None, summary=None, i=None, test_
     return pd.DataFrame(data)
 
 
-def process_all_timesteps(training_set=None, summary=None, i=None, test_weights=None):
+def process_all_timesteps(training_set=None, summary=None, i=None, test_weights=None, include_current=False):
     if training_set is None or test_weights is None:
         print("Error: training_set and test_weights must be provided.")
         return None
 
-    output_data = []
     data = []
     timesteps = sorted(training_set.keys())
 
+    # Keep only past-timestep weights (and optionally the current one) and
+    # renormalize so they sum to 1.  The incoming test_weights were normalized
+    # over all timesteps including the current one, which would under-sample
+    # past queries if we excluded it without renormalizing.
+    cutoff = (lambda t: t <= i) if include_current else (lambda t: t < i)
+    past_w_raw = {t: test_weights[t] for t in timesteps if cutoff(t) and t in test_weights}
+    past_total = sum(past_w_raw.values())
+    past_weights = {t: v / past_total for t, v in past_w_raw.items()} if past_total > 0 else {}
+
     for t in timesteps:
-        if t in test_weights:
-            sampled_data = np.random.choice(training_set[t], size=int(len(training_set[t]) * test_weights[t]), replace=False)
-            sampled_data = [q for q in sampled_data if isinstance(q, dict) and 'Parse' in q]
-            if not sampled_data:
-                continue
-            data.extend(sampled_data)
+        if t not in past_weights:
+            continue
+        sampled_data = np.random.choice(training_set[t], size=int(len(training_set[t]) * past_weights[t]), replace=False)
+        sampled_data = [q for q in sampled_data if isinstance(q, dict) and 'Parse' in q]
+        if not sampled_data:
+            continue
+        data.extend(sampled_data)
+
+    if not data:
+        # No past timesteps to evaluate (e.g. first timestep)
+        return pd.DataFrame([{"Timestep Window": f"{i}", "Total F1": float("nan")}])
 
     data = list(flatten_list(data))
     total_F1, _, _ = total_query_log_metrics(summary, data)
-    output_data.append({"Timestep Window": f"{i}", "Total F1": total_F1})
-    return pd.DataFrame(output_data)
+    return pd.DataFrame([{"Timestep Window": f"{i}", "Total F1": total_F1}])
 
 
 ##########################
@@ -672,6 +740,8 @@ def _evaluate_stateless_baseline(summary_method, method_name, KG, t, K, training
     t0 = time.time()
     summary = summary_method(KG, K, merged_logs)
     run_time = time.time() - t0
+
+    _log_baseline_summary_size(method_name, t, summary, requested_size=K)
 
     total_F1, _, _ = total_query_log_metrics(summary, test_data[t])
     present_row = {
@@ -884,6 +954,8 @@ def run_apex(graphs, triples_no_mc, training_data, test_data, weights, method_na
                 P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(KG, K, training_data[t], test_data[t], t=t)
         #total_F1, run_time, P = APEX_(KG, K,  training_data[t], test_data[t], t=t)
 
+        _log_baseline_summary_size(method_name, t, P, requested_size=K)
+
         apex_rows.append({"Timestep": t, _present_col(method_label): total_F1, "Runtime (seconds)": run_time})
         df_w = process_all_timesteps(training_set=test_data, summary=P, i=t, test_weights=_normalize_weights(test_w))
         weighted_tests.append(df_w)
@@ -1092,7 +1164,7 @@ def process_snapshots(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i])
+        queries_[i] = _build_seed_node_list(training_data[i], seed_mode="topic_only")
     
     action = "Loaded existing" if os.path.exists(query_log_file) else "Generated new"
     print(f"{action} query_logs")
@@ -1194,7 +1266,7 @@ def prepare_queries_and_splits_(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i])
+        queries_[i] = _build_seed_node_list(training_data[i], seed_mode="topic_only")
 
         del KG  # Free memory immediately
 
@@ -1231,7 +1303,7 @@ def prepare_queries_and_splits__(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i])
+        queries_[i] = _build_seed_node_list(training_data[i], seed_mode="topic_only")
 
         # Free memory immediately
         del KG
@@ -1549,6 +1621,7 @@ class BaselineEngine:
             #    P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
             #        apex_KG, K, training_data[t], test_data[t], t=t
             #    )
+        _log_baseline_summary_size(method_name, t, P, requested_size=K)
         progress_write(
                 "Updating APEX state"
             )
@@ -2155,7 +2228,7 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
     )[0]
 
 
-def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
+def _load_query_splits_from_bundle(bundle_dir, snapshot_files, seed_mode="topic_only"):
     training_data, test_data, queries_ = {}, {}, {}
     allow_numeric_answers = _subgraph_uses_numeric_entity_ids(bundle_dir.parent.parent)
 
@@ -2183,6 +2256,7 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files):
             training_data[timestep],
             allow_numeric_answers=allow_numeric_answers,
             return_stats=True,
+            seed_mode=seed_mode,
         )
         _log_query_seed_resolution(bundle_dir, timestep, file_name, seed_stats)
         load_steps.set_postfix(
@@ -2251,7 +2325,7 @@ def save_or_load_query_log(query_log_file, graph, timestep, topic_mids=None):
     return query_log
 
 
-def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None):
+def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None, seed_mode="topic_only"):
     """
     Generate training/test splits and query lists from a reusable stored query bundle.
     """
@@ -2272,6 +2346,7 @@ def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None):
     training_data, test_data, queries_ = _load_query_splits_from_bundle(
         selected_bundle["bundle_dir"],
         snapshot_files,
+        seed_mode=seed_mode,
     )
 
     progress_write(
