@@ -25,7 +25,7 @@ from src.metrics import total_query_log_metrics, average_query_log_metrics
 from src.apex import APEX
 from src.pagerank import PPR_FREQUENCY
 from src.progress import format_seconds, progress, progress_write
-from src.run_settings import resolve_query_generation_settings
+from src.run_settings import resolve_query_generation_settings, resolve_main_runtime_settings
 
 
 ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS = True
@@ -36,15 +36,13 @@ def _extract_seed_nodes_from_query(query):
     return _extract_seed_nodes_from_query_with_source(query)[0]
 
 
-def _subgraph_uses_numeric_entity_ids(subgraph_dir):
-    return DBPedia._path_uses_numeric_entity_ids(os.fspath(subgraph_dir))
 
 
 def _is_numeric_entity_id(value):
     return value is not None and str(value).isdigit()
 
 
-def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=False, seed_mode="answers_fallback_topic"):
+def _extract_seed_nodes_from_query_with_source(query, *, seed_mode="answers_fallback_topic"):
     """Return Sankofa seed nodes and how they were derived."""
     parse = query.get("Parse", {}) if isinstance(query, dict) else {}
     answers = parse.get("Answers", [])
@@ -55,26 +53,22 @@ def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=F
             return [topic_entity], "topic_fallback"
         return [], "empty"
 
+    # Accept any non-None AnswerArgument regardless of AnswerType so that
+    # datasets using "Value" typed answers (DBP, IMDB) are handled correctly.
     seed_nodes = []
-    numeric_seed_nodes = []
     for ans in answers:
         if not isinstance(ans, dict):
             continue
         answer_arg = ans.get("AnswerArgument")
-        if ans.get("AnswerType") == "Entity" and answer_arg is not None:
+        if answer_arg is not None:
             seed_nodes.append(answer_arg)
-        elif allow_numeric_answers and _is_numeric_entity_id(answer_arg):
-            numeric_seed_nodes.append(answer_arg)
 
     if seed_nodes:
-        if topic_entity is not None and topic_entity not in seed_nodes:
-            seed_nodes.insert(0, topic_entity)
+        if topic_entity is not None:
+            # Topic is inserted once per answer so it always holds exactly
+            # 50% of the total walk weight regardless of answer count.
+            seed_nodes = [topic_entity] * len(seed_nodes) + seed_nodes
         return seed_nodes, "answer_entities"
-
-    if numeric_seed_nodes:
-        if topic_entity is not None and topic_entity not in numeric_seed_nodes:
-            numeric_seed_nodes.insert(0, topic_entity)
-        return numeric_seed_nodes, "numeric_answer_recovery"
 
     if topic_entity is not None:
         return [topic_entity], "topic_fallback"
@@ -82,12 +76,11 @@ def _extract_seed_nodes_from_query_with_source(query, *, allow_numeric_answers=F
     return [], "empty"
 
 
-def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, return_stats=False, seed_mode="answers_fallback_topic"):
+def _build_seed_node_list(training_queries, *, return_stats=False, seed_mode="answers_fallback_topic"):
     seed_nodes = []
     stats = {
         "query_count": 0,
         "answer_seed_queries": 0,
-        "numeric_answer_seed_queries": 0,
         "topic_fallback_queries": 0,
         "empty_queries": 0,
         "seed_node_count": 0,
@@ -96,7 +89,6 @@ def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, retu
     for query in training_queries:
         query_seed_nodes, source = _extract_seed_nodes_from_query_with_source(
             query,
-            allow_numeric_answers=allow_numeric_answers,
             seed_mode=seed_mode,
         )
         stats["query_count"] += 1
@@ -104,8 +96,6 @@ def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, retu
 
         if source == "answer_entities":
             stats["answer_seed_queries"] += 1
-        elif source == "numeric_answer_recovery":
-            stats["numeric_answer_seed_queries"] += 1
         elif source == "topic_fallback":
             stats["topic_fallback_queries"] += 1
         else:
@@ -119,18 +109,33 @@ def _build_seed_node_list(training_queries, *, allow_numeric_answers=False, retu
     return seed_nodes
 
 
+def _compute_answer_frequency(training_queries):
+    """Return a normalized {entity_id: frequency} dict for answer entities.
+
+    Counts how often each entity appears as an AnswerArgument across all
+    training queries, then normalises so the values sum to 1.  The result
+    is used to steer boundary-triple selection toward triples that lead to
+    frequent answers without changing walk seeding.
+    """
+    freq = Counter()
+    for q in training_queries:
+        parse = q.get("Parse", {}) if isinstance(q, dict) else {}
+        for ans in parse.get("Answers", []):
+            if not isinstance(ans, dict):
+                continue
+            arg = ans.get("AnswerArgument")
+            if arg is not None:
+                freq[str(arg)] += 1
+    total = sum(freq.values())
+    if total == 0:
+        return {}
+    return {k: v / total for k, v in freq.items()}
+
+
 def _log_query_seed_resolution(bundle_dir, timestep, file_name, seed_stats):
     query_count = seed_stats["query_count"]
     if query_count == 0:
         return
-
-    if seed_stats["numeric_answer_seed_queries"] > 0:
-        progress_write(
-            f"Query logs: recovered numeric answer seeds for "
-            f"{seed_stats['numeric_answer_seed_queries']}/{query_count} training queries "
-            f"in {bundle_dir.name} snapshot {timestep} ({file_name}); "
-            "the stored bundle predates numeric wiki IDs being treated as entities."
-        )
 
     if seed_stats["topic_fallback_queries"] > 0:
         progress_write(
@@ -598,12 +603,12 @@ def _log_baseline_summary_size(method_name, timestep, summary, requested_size=No
 
 
 METHODS = { 
-    'glimpse': SummaryMethod(GLIMPSE, 'GLIMPSE'),
+    'glimpse': SummaryMethod(GLIMPSE, 'GLIMPSE', seed_mode=resolve_main_runtime_settings()["seed_mode"]),
     'apex': SummaryMethod(APEX, 'APEX'),
     'isummary': SummaryMethod(ISUMMARY, 'ISUMMARY'),
     'hhop_random': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM', h=2, neighborhood_mode='both'),
     'hhop_random_outgoing': SummaryMethod(HHOP_RANDOM, 'HHOP_RANDOM_OUTGOING', h=2, neighborhood_mode='outgoing_only'),
-    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=2),
+    'ppr_frequency': SummaryMethod(PPR_FREQUENCY, 'PPR_FREQUENCY', n=2, seed_mode=resolve_main_runtime_settings()["seed_mode"]),
 
 }
 
@@ -1137,7 +1142,7 @@ def analyze_graph_properties(graph, timestep):
 
 
 
-def process_snapshots(subgraph_dir):
+def process_snapshots(subgraph_dir, seed_mode="topic_only"):
     """Process all snapshots and generate graphs, query logs, and training/test data."""
     graphs, training_data, test_data, queries_ = {}, {}, {}, {}
 
@@ -1164,7 +1169,7 @@ def process_snapshots(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i], seed_mode="topic_only")
+        queries_[i] = _build_seed_node_list(training_data[i], seed_mode=seed_mode)
     
     action = "Loaded existing" if os.path.exists(query_log_file) else "Generated new"
     print(f"{action} query_logs")
@@ -1188,7 +1193,7 @@ def load_single_snapshot(subgraph_dir, file_name):
 import pickle
 from pathlib import Path
 
-def prepare_queries_and_splits_(subgraph_dir):
+def prepare_queries_and_splits_(subgraph_dir, seed_mode="topic_only"):
     """
     Use ONE graph snapshot,
     but stream ALL existing query logs as timesteps.
@@ -1266,7 +1271,7 @@ def prepare_queries_and_splits_(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i], seed_mode="topic_only")
+        queries_[i] = _build_seed_node_list(training_data[i], seed_mode=seed_mode)
 
         del KG  # Free memory immediately
 
@@ -1275,7 +1280,7 @@ def prepare_queries_and_splits_(subgraph_dir):
     return training_data, test_data, queries_, snapshot_files
 
 
-def prepare_queries_and_splits__(subgraph_dir):
+def prepare_queries_and_splits__(subgraph_dir, seed_mode="topic_only"):
     """
     Generate training/test splits and query lists
     WITHOUT storing all graphs in memory.
@@ -1303,7 +1308,7 @@ def prepare_queries_and_splits__(subgraph_dir):
         split_idx = int(0.8 * len(query_log))
         training_data[i] = query_log[:split_idx]
         test_data[i] = query_log[split_idx:]
-        queries_[i] = _build_seed_node_list(training_data[i], seed_mode="topic_only")
+        queries_[i] = _build_seed_node_list(training_data[i], seed_mode=seed_mode)
 
         # Free memory immediately
         del KG
@@ -1846,6 +1851,7 @@ def _query_generation_settings():
         "num_queries": query_settings["num_queries"],
         "shuffle": query_settings["shuffle"],
         "random_query_prob": query_settings["random_query_prob"],
+        "chain_len": query_settings["chain_len"],
     }
 
 
@@ -1858,13 +1864,16 @@ def _format_query_setting_value(value):
 
 
 def _query_bundle_prefix(settings):
-    return (
+    prefix = (
         f"tc{settings['topic_count']}_"
         f"cr{_format_query_setting_value(settings['topic_change_ratio'])}_"
         f"q{settings['num_queries']}_"
         f"s{_format_query_setting_value(settings['shuffle'])}_"
         f"p{_format_query_setting_value(settings['random_query_prob'])}"
     )
+    if settings.get("chain_len", 1) != 1:
+        prefix += f"_cl{settings['chain_len']}"
+    return prefix
 
 
 def _query_bundle_name(settings, bundle_id):
@@ -1944,8 +1953,16 @@ def _query_bundle_id_from_name(bundle_name, settings):
 def _query_bundle_is_valid(bundle_dir, metadata, settings, snapshot_metadata):
     if not isinstance(metadata, dict):
         return False
-    if metadata.get("generation_settings") != settings:
-        return False
+    stored = metadata.get("generation_settings")
+    if stored != settings:
+        # When chain_len is 1 (the implicit default for old bundles), also accept
+        # metadata that matches settings minus the chain_len key.
+        if settings.get("chain_len", 1) == 1:
+            settings_without_chain_len = {k: v for k, v in settings.items() if k != "chain_len"}
+            if stored != settings_without_chain_len:
+                return False
+        else:
+            return False
     if not _snapshot_metadata_list_matches(metadata.get("snapshot_files"), snapshot_metadata):
         return False
     if metadata.get("query_log_count") != len(snapshot_metadata):
@@ -2230,7 +2247,6 @@ def _ensure_query_bundle(subgraph_dir, snapshot_files, query_bundle_index=None):
 
 def _load_query_splits_from_bundle(bundle_dir, snapshot_files, seed_mode="topic_only"):
     training_data, test_data, queries_ = {}, {}, {}
-    allow_numeric_answers = _subgraph_uses_numeric_entity_ids(bundle_dir.parent.parent)
 
     load_steps = progress(
         enumerate(snapshot_files),
@@ -2254,7 +2270,6 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files, seed_mode="topic_
         test_data[timestep] = query_log[split_idx:]
         queries_[timestep], seed_stats = _build_seed_node_list(
             training_data[timestep],
-            allow_numeric_answers=allow_numeric_answers,
             return_stats=True,
             seed_mode=seed_mode,
         )
@@ -2270,7 +2285,7 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files, seed_mode="topic_
 
 
 def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle=True,
-    random_query_prob=0, rng=None, np_rng=None):
+    random_query_prob=0, chain_len=1, rng=None, np_rng=None):
     """Generate query logs using given topics."""
 
     valid_topic_mids = [mid for mid in topic_mids if mid in graph.triples_]
@@ -2286,6 +2301,7 @@ def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle
         topic_dist=np.ones(len(valid_topic_mids)) / len(valid_topic_mids),
         shuffle=shuffle,
         random_query_prob=random_query_prob,
+        chain_len=chain_len,
         rng=rng,
         np_rng=np_rng,
     )
@@ -2317,6 +2333,7 @@ def save_or_load_query_log(query_log_file, graph, timestep, topic_mids=None):
         num_queries=settings["num_queries"],
         shuffle=settings["shuffle"],
         random_query_prob=settings["random_query_prob"],
+        chain_len=settings["chain_len"],
     )
 
     with open(query_log_file, "wb") as f:

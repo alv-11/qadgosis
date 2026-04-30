@@ -121,7 +121,7 @@ unordered_map<int, double> build_personalization(const vector<int>& query_nodes)
     unordered_map<int, double> personalization;
     double equal_weight = 1.0 / query_nodes.size();
     for (int node : query_nodes)
-        personalization[node] = equal_weight;
+        personalization[node] += equal_weight;  // accumulate: repeated nodes get proportionally higher weight
     return personalization;
 }
 
@@ -130,7 +130,7 @@ void add_dummy_node(Graph_& graph, const vector<int>& query_nodes, int dummy_nod
     auto& dummy_neighbors = graph[dummy_node];
     dummy_neighbors.clear();
     for (int node : query_nodes)
-        dummy_neighbors[node] = equal_weight;
+        dummy_neighbors[node] += equal_weight;  // accumulate: repeated nodes get proportionally higher walk probability
 }
 
 void remove_dummy_node(Graph_& graph, int dummy_node) {

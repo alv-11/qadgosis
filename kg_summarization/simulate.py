@@ -31,9 +31,9 @@ from src.run_settings import (
 from src.sankofa_delta import ensure_sankofa_delta_cache
 from src.summary import prepare_query_bundles
 
-DEFAULT_SUBGRAPH_DIR = "/home/kasper/wiki_new/wiki_10"#"/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"
-#DEFAULT_SUBGRAPH_DIR = "/home/kasper/dbp"#"/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"
-DEFAULT_NUM_RUNS = 3
+DEFAULT_SUBGRAPH_DIR = "/home/kasper/dbp"#"/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"
+#DEFAULT_SUBGRAPH_DIR = "/home/kasper/wiki_new/wiki_10"#"/mnt/c/Users/kaspe/OneDrive/Skrivebord/Reps/qadgosis/kg_summarization/data/test_750"
+DEFAULT_NUM_RUNS = 5
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_PARENT_DIR_NAME = "simulations"
 ORIGINAL_SCRIPT = SCRIPT_DIR / "main.py"

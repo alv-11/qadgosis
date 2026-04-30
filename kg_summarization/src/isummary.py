@@ -6,7 +6,7 @@ from src.metrics import total_query_log_metrics
 from src.base import DBPedia
 
 
-def extract_entities_from_query(q):
+def extract_entities_from_query(q, seed_mode="answers_fallback_topic"):
     """Extract all entity IDs from a query, handling nested structure."""
     entities = set()
     
@@ -20,10 +20,11 @@ def extract_entities_from_query(q):
                 entities.add(str(topic))
             
             # Answers
-            for ans in parse.get("Answers", []):
-                arg = ans.get("AnswerArgument")
-                if arg:
-                    entities.add(str(arg))
+            if seed_mode != "topic_only":
+                for ans in parse.get("Answers", []):
+                    arg = ans.get("AnswerArgument")
+                    if arg:
+                        entities.add(str(arg))
             
             # Constraints
             for constraint in parse.get("Constraints", []):
@@ -49,7 +50,7 @@ def extract_entities_from_query(q):
     return entities
 
 
-def filter_queries_by_entities(Q, entities, require_all=False):
+def filter_queries_by_entities(Q, entities, require_all=False, seed_mode="answers_fallback_topic"):
     """Filter queries that mention any or all of the given entities."""
     filtered = []
     target_entities = set(map(str, entities))
@@ -58,7 +59,7 @@ def filter_queries_by_entities(Q, entities, require_all=False):
         return filtered
     
     for q in Q:
-        q_entities = extract_entities_from_query(q)
+        q_entities = extract_entities_from_query(q, seed_mode=seed_mode)
         if require_all:
             if target_entities <= q_entities:
                 filtered.append(q)
@@ -68,12 +69,12 @@ def filter_queries_by_entities(Q, entities, require_all=False):
     return filtered
 
 
-def select_top_nodes(Qs, max_nodes=None):
+def select_top_nodes(Qs, max_nodes=None, seed_mode="answers_fallback_topic"):
     """Select top nodes from queries Qs, optionally limited by max_nodes."""
     node_freq = Counter()
     
     for q in Qs:
-        entities = extract_entities_from_query(q)
+        entities = extract_entities_from_query(q, seed_mode=seed_mode)
         for entity in entities:
             node_freq[entity] += 1
     
@@ -172,7 +173,7 @@ def resolve_path_to_triples(G, path):
     return triples
 
 
-def build_isummary_with_target_size(KG, query_log, s, target_triples, graph=None):
+def build_isummary_with_target_size(KG, query_log, s, target_triples, graph=None, seed_mode="answers_fallback_topic"):
     """
    iSummary that grows summary until reaching target triple count.
     This is a departure from the original k-node approach.
@@ -189,6 +190,58 @@ def build_isummary_with_target_size(KG, query_log, s, target_triples, graph=None
         return S
 
     visited = {seed}
+
+    if seed_mode == "topic_only":
+        # In topic-only mode each query has exactly one entity, so co-occurrence
+        # within a single query never happens.  Instead, collect all topic entities
+        # from the full log and find paths between them in the unrestricted graph.
+        topic_freq = Counter()
+        for q in query_log:
+            for entity in extract_entities_from_query(q, seed_mode="topic_only"):
+                e_str = str(entity)
+                if G.has_node(e_str) and e_str != seed:
+                    topic_freq[e_str] += 1
+
+        candidate_nodes = [
+            node
+            for node, freq in sorted(
+                topic_freq.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+            if freq > 0
+        ]
+
+        for x in candidate_nodes:
+            if len(S) >= target_triples:
+                break
+
+            all_paths = []
+            for y in sorted(visited):
+                path = get_shortest_path_between(G, x, y)
+                if path:
+                    all_paths.append(path)
+
+            if not all_paths:
+                continue
+
+            selected_path = find_most_frequent_path(all_paths)
+            path_triples = resolve_path_to_triples(G, selected_path)
+
+            if not path_triples:
+                continue
+
+            visited.add(x)
+
+            if len(S) + len(path_triples) > target_triples:
+                remaining = target_triples - len(S)
+                if remaining > 0:
+                    S.update(set(sorted(path_triples)[:remaining]))
+                break
+
+            S.update(path_triples)
+
+        return S
+
     query_entities_cache = []
     query_indices_by_entity = defaultdict(set)
     node_freq = Counter()
@@ -196,7 +249,7 @@ def build_isummary_with_target_size(KG, query_log, s, target_triples, graph=None
     for q in query_log:
         q_entities = {
             str(entity)
-            for entity in extract_entities_from_query(q)
+            for entity in extract_entities_from_query(q, seed_mode=seed_mode)
             if G.has_node(str(entity))
         }
 
@@ -271,14 +324,14 @@ def build_isummary_with_target_size(KG, query_log, s, target_triples, graph=None
     return S
 
 
-def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
+def build_global_isummary_with_target_size(KG, target_triples, query_log, seed_mode="answers_fallback_topic"):
     """
     Build global summary by combining personalized summaries for each query entity.
     """
     # Extract all unique entities from queries
     all_query_entities = set()
     for q in query_log:
-        entities = extract_entities_from_query(q)
+        entities = extract_entities_from_query(q, seed_mode=seed_mode)
         all_query_entities.update(entities)
     
     #print(f"\n[INFO] Found {len(all_query_entities)} unique entities in queries")
@@ -300,7 +353,7 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
     # Calculate target size per entity
     entity_freq = Counter()
     for q in query_log:
-        entities = extract_entities_from_query(q)
+        entities = extract_entities_from_query(q, seed_mode=seed_mode)
         for entity in entities:
             if entity in valid_entities:
                 entity_freq[entity] += 1
@@ -317,7 +370,7 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
             
         entity_share = min(
             remaining_budget,
-            max(1000, int((freq / total_freq) * target_triples)),
+            max(1, int((freq / total_freq) * target_triples)),
         )
         
 
@@ -328,6 +381,7 @@ def build_global_isummary_with_target_size(KG,  target_triples, query_log,):
                 entity,
                 entity_share,
                 graph=G,
+                seed_mode=seed_mode,
             )
             all_summary_triples.update(entity_summary)
         except Exception as e:
@@ -458,13 +512,10 @@ class SummaryDBPedia:
         return self.relations_
 
 
-def ISUMMARY(KG, target_triples,  query_log):
+def ISUMMARY(KG, target_triples, query_log, seed_mode="answers_fallback_topic"):
 
-    all_summary_triples = build_global_isummary_with_target_size(KG, target_triples,query_log)
+    all_summary_triples = build_global_isummary_with_target_size(KG, target_triples, query_log, seed_mode=seed_mode)
 
-
-    if not all_summary_triples:
-        return 0, 0, 0
 
     # Create and evaluate summary
     summary = SummaryDBPedia(all_summary_triples, KG)

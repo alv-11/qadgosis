@@ -524,14 +524,15 @@ class KnowledgeGraph(object):
         """
         return self.triple_value_[triple]
 
-    def model_user_pref(self, query_log, power=1):
+    def model_user_pref(self, query_log, power=1, seed_mode="topic_only"):
         """
         :param query_log: list of queries as dicts
         :param power: number of terms in Taylor expansion
+        :param seed_mode: how to extract seed entities from each query
         """
         self.reset()
         # Perform random walk on the KG
-        x = query_vector(self, query_log)
+        x = query_vector(self, query_log, seed_mode=seed_mode)
         M = self.transition_matrix()
         x = random_walk_with_restart(M, x, power=power)
         # x /= np.sum(x)

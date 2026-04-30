@@ -77,17 +77,18 @@ class SummaryMethod(object):
         return self.fn_(KG, K, query_log, **self.kwargs_)
 
 
-def GLIMPSE(KG, K, query_log, epsilon=1e-3, power=1):
+def GLIMPSE(KG, K, query_log, epsilon=1e-3, power=1, seed_mode="topic_only"):
     """
     :param KG: KnowledgeGraph to summarize
     :param K: number of triples in summary
     :param query_log: user queries
     :param epsilon: float in (0, 1] or None, epsilon-from-optimal factor
     :param power: number of terms in Taylor expansion
+    :param seed_mode: how to extract seed entities from each query
     :return S: Summary
     """
     # Estimate user preferences over KG
-    KG.model_user_pref(query_log, power=power)
+    KG.model_user_pref(query_log, power=power, seed_mode=seed_mode)
 
     # Greedily select top-k triples for summary S
     heap = Heap(KG)

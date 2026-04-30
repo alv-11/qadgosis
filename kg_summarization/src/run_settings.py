@@ -6,11 +6,11 @@ DEFAULT_MAIN_RUNTIME_SETTINGS = {
     "c": 2,
     "epsilon": 0.9,
     "decay_rate": 0.8,
-    "window_size": 5,
-    "budget_ratio": 0.00005,
-    "baseline_methods": [],#["glimpse","apex","isummary"],#, "hhop_random", "hhop_random_outgoing", "ppr_frequency"],
+    "window_size": 30,
+    "budget_ratio": 0.00001,
+    "baseline_methods": ["isummary"],#,"hhop_random", "hhop_random_outgoing", "ppr_frequency"],
     "log_changes_in_topk": False,
-    "seed_mode": "topic_only", #answers_fallback_topic
+    "seed_mode": "topic_only", "answers_fallback_topic",
     "eval_decay_rate": 0.8,
 }
 
@@ -33,6 +33,7 @@ DEFAULT_QUERY_GENERATION_SETTINGS = {
     "num_queries": 200,
     "shuffle": True,
     "random_query_prob": 0.1,
+    "chain_len": 1,
 }
 
 QUERY_GENERATION_ENV_VARS = {
@@ -41,6 +42,7 @@ QUERY_GENERATION_ENV_VARS = {
     "num_queries": "QADGOSIS_QUERY_NUM_QUERIES",
     "shuffle": "QADGOSIS_QUERY_SHUFFLE",
     "random_query_prob": "QADGOSIS_QUERY_RANDOM_QUERY_PROB",
+    "chain_len": "QADGOSIS_QUERY_CHAIN_LEN",
 }
 
 
@@ -158,6 +160,12 @@ def resolve_query_generation_settings(env=None):
             DEFAULT_QUERY_GENERATION_SETTINGS["random_query_prob"],
             float,
         ),
+        "chain_len": _resolve_scalar(
+            env,
+            QUERY_GENERATION_ENV_VARS["chain_len"],
+            DEFAULT_QUERY_GENERATION_SETTINGS["chain_len"],
+            int,
+        ),
     }
 
 
@@ -183,4 +191,5 @@ def query_generation_settings_to_env(settings):
         QUERY_GENERATION_ENV_VARS["num_queries"]: str(settings["num_queries"]),
         QUERY_GENERATION_ENV_VARS["shuffle"]: "1" if settings["shuffle"] else "0",
         QUERY_GENERATION_ENV_VARS["random_query_prob"]: str(settings["random_query_prob"]),
+        QUERY_GENERATION_ENV_VARS["chain_len"]: str(settings["chain_len"]),
     }

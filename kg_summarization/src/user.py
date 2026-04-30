@@ -110,7 +110,7 @@ def generate_queries_by_topic(KG, topic, n_topic_queries, n_topic_mids, rng=None
 
     return query_log
 
-def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid, rng=None):
+def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid, chain_len=1, rng=None):
     """
     :param KG: KnowledgeGraph
     :param topic_mid: topic entity of query
@@ -162,11 +162,11 @@ def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid, rng=None):
     # ]
     # a = [generate_query(KG, topic_mid, chain_len=random.randint(1, 3), qid=_+start_qid) for _ in range(n_mid_queries)]
     rng = random if rng is None else rng
-    a = [generate_query(KG, topic_mid, chain_len=1, qid=_+start_qid, rng=rng) for _ in range(n_mid_queries)]
+    a = [generate_query(KG, topic_mid, chain_len=chain_len, qid=_+start_qid, rng=rng) for _ in range(n_mid_queries)]
     # pdb.set_trace()
     return a
 
-def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False, rng=None, np_rng=None):
+def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False, chain_len=1, rng=None, np_rng=None):
     """
     :param KG: KnowledgeGraph
     :param query_log: list of dict queries
@@ -198,7 +198,7 @@ def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False, rng=None,
     for i in range(len(indices)):
         index = indices[i]
         # query_log[index] = generate_query(KG, entities[i], chain_len=random.randint(1, 3), qid=index)
-        query_log[index] = generate_query(KG, entities[i], chain_len=1, qid=index, rng=rng)
+        query_log[index] = generate_query(KG, entities[i], chain_len=chain_len, qid=index, rng=rng)
 
         
 
@@ -243,7 +243,7 @@ def query_log_by_topics(KG, topics, n_mids_per_topic, n_queries_in_log,
 
 def query_log_by_mids(KG, topic_mids, n_queries_in_log,
         topic_dist=None, shuffle=False, random_query_prob=0.1, whether_save = False,
-        rng=None, np_rng=None):
+        chain_len=1, rng=None, np_rng=None):
     """
     :param KG: KnowledgeGraph
     :param topic_mids: topic entities in the log
@@ -264,12 +264,12 @@ def query_log_by_mids(KG, topic_mids, n_queries_in_log,
     for n_mid_queries, topic_mid in zip(queries_per_topic, topic_mids):
         n_mid_queries = min(n_mid_queries, n_queries_in_log - len(query_log))
         query_log.extend(generate_queries_by_mid(
-            KG, topic_mid, n_mid_queries, start_qid, rng=rng))
+            KG, topic_mid, n_mid_queries, start_qid, chain_len=chain_len, rng=rng))
         start_qid += n_mid_queries
 
     # Replace some queries with random ones
     query_log, indices = randomize_log(KG, query_log,
-        random_query_prob=random_query_prob, shuffle=shuffle, rng=rng, np_rng=np_rng)
+        random_query_prob=random_query_prob, shuffle=shuffle, chain_len=chain_len, rng=rng, np_rng=np_rng)
     if whether_save:
         logging.info('---Clear existing mid and query files---')
         for filename in os.listdir(KG.mid_dir()):
