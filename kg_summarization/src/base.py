@@ -2,6 +2,7 @@ import os
 import gzip
 import json
 import re
+from pathlib import Path
 
 import numpy as np
 import pdb
@@ -33,6 +34,8 @@ class KnowledgeGraph(object):
         self.relation_id_ = {}
         self.id_relation_ = {}
         self.entities_to_relation_ = {}
+        self.entity_triple_count_ = defaultdict(int)
+        self.relation_triple_count_ = defaultdict(int)
 
         self.name_ = None
 
@@ -46,6 +49,74 @@ class KnowledgeGraph(object):
         self.csr_matrix_indirect_heat_ = None
 
         self.triples_by_relation_id_ = {}
+        self.reverse_triples_ = None  # {predicate: {object: set(subjects)}}, built lazily on demand
+
+    def _invalidate_cached_views(self):
+        self.csr_matrix_ = None
+        self.csr_matrix_T_ = None
+        self.csr_matrix_indirect_ = None
+        self.csr_matrix_heterogeneous_ = None
+        self.csr_matrix_heterogeneous_indirect_ = None
+        self.transition_matrix_ = None
+        self.csr_matrix_indirect_heat_ = None
+        self.triples_by_relation_id_ = {}
+
+    def ensure_reverse_index(self):
+        """Build reverse index {predicate: {object: set(subjects)}} if not already built."""
+        if self.reverse_triples_ is not None:
+            return
+        idx = {}
+        for subj, preds in self.triples_.items():
+            for pred, objs in preds.items():
+                if pred not in idx:
+                    idx[pred] = {}
+                for obj in objs:
+                    if obj not in idx[pred]:
+                        idx[pred][obj] = set()
+                    idx[pred][obj].add(subj)
+        self.reverse_triples_ = idx
+
+    def _cache_triple_by_relation(self, triple):
+        e1, r, e2 = triple
+        relation_id = self.relation_id_.get(r)
+        if relation_id is None or relation_id not in self.triples_by_relation_id_:
+            return
+
+        self.triples_by_relation_id_[relation_id].append(
+            (self.entity_id(e1), relation_id, self.entity_id(e2))
+        )
+
+    def _uncache_triple_by_relation(self, triple):
+        e1, r, e2 = triple
+        relation_id = self.relation_id_.get(r)
+        if relation_id is None or relation_id not in self.triples_by_relation_id_:
+            return
+
+        triple_in_id = (self.entity_id(e1), relation_id, self.entity_id(e2))
+        try:
+            self.triples_by_relation_id_[relation_id].remove(triple_in_id)
+        except ValueError:
+            return
+
+    def _ensure_entity(self, entity):
+        if self.has_entity(entity):
+            return self.entity_id_[entity]
+
+        self.entity_id_[entity] = self.eid_
+        self.id_entity_[self.eid_] = entity
+        self.entities_.add(entity)
+        self.eid_ += 1
+        return self.entity_id_[entity]
+
+    def _ensure_relationship(self, relationship):
+        if self.has_relationship(relationship):
+            return self.relation_id_[relationship]
+
+        self.relation_id_[relationship] = self.rid_
+        self.id_relation_[self.rid_] = relationship
+        self.relationships_.add(relationship)
+        self.rid_ += 1
+        return self.relation_id_[relationship]
         
 
     def name(self):
@@ -130,7 +201,7 @@ class KnowledgeGraph(object):
         """
         e1, r, e2 = triple
         return e1 in self.triples_ and r in self.triples_[e1] and e2 in self.triples_[e1][r]
-    
+
 
         
     def find_triple_by_entities_indirect(self, e1, e2):
@@ -154,29 +225,17 @@ class KnowledgeGraph(object):
         # else:
         #     return None
 
-    def add_triple(self, triple):
+    def add_triple(self, triple, invalidate_views=True):
         """
         :param triple: (e1, r, e2) triple
         """
         e1, r, e2 = triple
         if not self.has_triple(triple):
             self.number_of_triples_ += 1
-            
 
-            # Record new entities
-            for entity in (e1, e2):
-                if not self.has_entity(entity):
-                    self.entity_id_[entity] = self.eid_
-                    self.id_entity_[self.eid_] = entity
-                    self.entities_.add(entity)
-                    self.eid_ += 1
-
-            # record new relation
-            if not self.has_relationship(r):
-                self.relation_id_[r] = self.rid_
-                self.id_relation_[self.rid_] = r
-                self.relationships_.add(r)
-                self.rid_ += 1
+            e1_id = self._ensure_entity(e1)
+            relation_id = self._ensure_relationship(r)
+            e2_id = self._ensure_entity(e2)
 
 
             if e1 not in self.triples_:
@@ -190,6 +249,89 @@ class KnowledgeGraph(object):
             if e2 not in self.entities_to_relation_[e1]:
                 self.entities_to_relation_[e1][e2] = set()
             self.entities_to_relation_[e1][e2].add(r)
+
+            self.entity_triple_count_[e1_id] += 1
+            self.entity_triple_count_[e2_id] += 1
+            self.relation_triple_count_[relation_id] += 1
+
+            self._cache_triple_by_relation(triple)
+            if invalidate_views:
+                self._invalidate_cached_views()
+            return True
+
+        return False
+
+    def remove_triple(self, triple, invalidate_views=True):
+        e1, r, e2 = triple
+        if not self.has_triple(triple):
+            return False
+
+        e1_id = self.entity_id(e1)
+        relation_id = self.relation_id(r)
+        e2_id = self.entity_id(e2)
+
+        self.triples_[e1][r].remove(e2)
+        if not self.triples_[e1][r]:
+            del self.triples_[e1][r]
+        if not self.triples_[e1]:
+            del self.triples_[e1]
+
+        if e1 in self.entities_to_relation_ and e2 in self.entities_to_relation_[e1]:
+            self.entities_to_relation_[e1][e2].discard(r)
+            if not self.entities_to_relation_[e1][e2]:
+                del self.entities_to_relation_[e1][e2]
+            if not self.entities_to_relation_[e1]:
+                del self.entities_to_relation_[e1]
+
+        self.entity_triple_count_[e1_id] -= 1
+        if self.entity_triple_count_[e1_id] <= 0:
+            self.entity_triple_count_.pop(e1_id, None)
+
+        self.entity_triple_count_[e2_id] -= 1
+        if self.entity_triple_count_[e2_id] <= 0:
+            self.entity_triple_count_.pop(e2_id, None)
+
+        self.relation_triple_count_[relation_id] -= 1
+        if self.relation_triple_count_[relation_id] <= 0:
+            self.relation_triple_count_.pop(relation_id, None)
+
+        self.number_of_triples_ -= 1
+        self._uncache_triple_by_relation(triple)
+        if invalidate_views:
+            self._invalidate_cached_views()
+        return True
+
+    def apply_triple_delta(self, triples_added=None, triples_removed=None):
+        triples_removed = triples_removed or []
+        triples_added = triples_added or []
+
+        if not triples_removed and not triples_added:
+            return False
+
+        # Invalidate up-front so per-triple cache maintenance is skipped
+        # during large delta application batches.
+        self._invalidate_cached_views()
+
+        changed = False
+        for triple in triples_removed:
+            changed = self.remove_triple(triple, invalidate_views=False) or changed
+
+        for triple in triples_added:
+            changed = self.add_triple(triple, invalidate_views=False) or changed
+
+        return changed
+
+    def register_entity(self, entity):
+        return self._ensure_entity(entity)
+
+    def register_relationship(self, relationship):
+        return self._ensure_relationship(relationship)
+
+    def reserve_triples(self, triples):
+        for e1, r, e2 in triples:
+            self._ensure_entity(e1)
+            self._ensure_entity(e2)
+            self._ensure_relationship(r)
 
 
 
@@ -212,6 +354,12 @@ class KnowledgeGraph(object):
     
     def id_relation(self, rid):
         return self.id_relation_[rid]
+
+    def entity_triple_count(self, entity_id):
+        return self.entity_triple_count_.get(entity_id, 0)
+
+    def relation_triple_count(self, relation_id):
+        return self.relation_triple_count_.get(relation_id, 0)
     
     def csr_matrix(self):
         if self.csr_matrix_ is None:
@@ -355,12 +503,18 @@ class KnowledgeGraph(object):
     
 
     def triples_by_relation_id(self, relation_id):
-        relation = self.id_relation(relation_id)
         if relation_id not in self.triples_by_relation_id_:
             self.triples_by_relation_id_[relation_id] = []
-            for triple in self.triples():
-                if triple[1] == relation:
-                    self.triples_by_relation_id_[relation_id].append((self.entity_id(triple[0]), relation_id, self.entity_id(triple[2])))
+            relation = self.id_relation(relation_id)
+            for e1, relations in self.triples_.items():
+                targets = relations.get(relation)
+                if not targets:
+                    continue
+                e1_id = self.entity_id(e1)
+                for e2 in targets:
+                    self.triples_by_relation_id_[relation_id].append(
+                        (e1_id, relation_id, self.entity_id(e2))
+                    )
         return self.triples_by_relation_id_[relation_id]
 
 
@@ -386,14 +540,15 @@ class KnowledgeGraph(object):
         """
         return self.triple_value_[triple]
 
-    def model_user_pref(self, query_log, power=1):
+    def model_user_pref(self, query_log, power=1, seed_mode="topic_only"):
         """
         :param query_log: list of queries as dicts
         :param power: number of terms in Taylor expansion
+        :param seed_mode: how to extract seed entities from each query
         """
         self.reset()
         # Perform random walk on the KG
-        x = query_vector(self, query_log)
+        x = query_vector(self, query_log, seed_mode=seed_mode)
         M = self.transition_matrix()
         x = random_walk_with_restart(M, x, power=power)
         # x /= np.sum(x)
@@ -607,9 +762,15 @@ class DBPedia(KnowledgeGraph):
         self.rdf_gz_ = os.path.join(rdf_gz)
         self.query_dir_ = os.path.join(self.DBPEDIA_DATA_DIR_query, query_dir)
         self.mid_dir_ = os.path.join(self.DBPEDIA_DATA_DIR_query, mid_dir)
+        self.numeric_entity_ids_ = self._path_uses_numeric_entity_ids(self.rdf_gz_)
+
+    @staticmethod
+    def _path_uses_numeric_entity_ids(path):
+        return any(part.lower().startswith('wiki') for part in Path(path).parts)
 
     def is_entity(self, s):
-        return s.startswith('<') and s.endswith('>')
+        return (s.startswith('<') and s.endswith('>')) or \
+            (self.numeric_entity_ids_ and s.isdigit())
 
     def query_dir(self):
         return self.query_dir_

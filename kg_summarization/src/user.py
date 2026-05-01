@@ -12,6 +12,10 @@ from collections import defaultdict
 from .query import generate_query, load_question, load_questions_from_file
 
 
+def _resolve_rngs(rng=None, np_rng=None):
+    return (random if rng is None else rng), (np.random if np_rng is None else np_rng)
+
+
 def reuse(query_log):
     """
     :param query_log: list of dict WebQSP-style questions
@@ -47,7 +51,7 @@ def predicate_counts(query_log):
             relations[predicate] += 1
     return relations
 
-def generate_queries_by_topic(KG, topic, n_topic_queries, n_topic_mids):
+def generate_queries_by_topic(KG, topic, n_topic_queries, n_topic_mids, rng=None, np_rng=None):
     """
     :param KG: KnowledgeGraph
     :param topic: name of querying topic ("art", "music")
@@ -80,8 +84,10 @@ def generate_queries_by_topic(KG, topic, n_topic_queries, n_topic_mids):
         q1
         q3
     """
+    rng, np_rng = _resolve_rngs(rng, np_rng)
+
     # Generate the number of queries per topic MID
-    p = np.random.uniform(size=n_topic_mids)
+    p = np_rng.uniform(size=n_topic_mids)
     p /= np.sum(p)
     queries_per_mid = np.int64(np.ceil(p * n_topic_queries))
 
@@ -92,19 +98,19 @@ def generate_queries_by_topic(KG, topic, n_topic_queries, n_topic_mids):
     topic_mids = [
         question['Parse']['TopicEntityMid'] for qid, question in queries_of_topic.items()
     ]
-    topic_mids = random.choices(topic_mids, k=n_topic_mids)
+    topic_mids = rng.choices(topic_mids, k=n_topic_mids)
 
     # Obtain a selection of queries for each topic MID
     query_log = []
     for topic_mid, n_mid_queries in zip(topic_mids, queries_per_mid):
         n_mid_queries = min(n_mid_queries, n_topic_queries - len(query_log))
         query_log.extend(
-                generate_queries_by_mid(KG, topic_mid, n_mid_queries)
+                generate_queries_by_mid(KG, topic_mid, n_mid_queries, len(query_log), rng=rng)
         )
 
     return query_log
 
-def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid):
+def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid, chain_len=1, rng=None):
     """
     :param KG: KnowledgeGraph
     :param topic_mid: topic entity of query
@@ -155,11 +161,12 @@ def generate_queries_by_mid(KG, topic_mid, n_mid_queries, start_qid):
     #     generate_query(KG, topic_mid, chain_len=random.randint(1, 3)) for _ in range(n_mid_queries)
     # ]
     # a = [generate_query(KG, topic_mid, chain_len=random.randint(1, 3), qid=_+start_qid) for _ in range(n_mid_queries)]
-    a = [generate_query(KG, topic_mid, chain_len=1, qid=_+start_qid) for _ in range(n_mid_queries)]
+    rng = random if rng is None else rng
+    a = [generate_query(KG, topic_mid, chain_len=chain_len, qid=_+start_qid, rng=rng) for _ in range(n_mid_queries)]
     # pdb.set_trace()
     return a
 
-def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False):
+def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False, chain_len=1, rng=None, np_rng=None):
     """
     :param KG: KnowledgeGraph
     :param query_log: list of dict queries
@@ -167,14 +174,18 @@ def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False):
     :param shuffle: randomly shuffle the returned log
     :return query_log: updated query log
     """
+    rng, np_rng = _resolve_rngs(rng, np_rng)
     query_dir = KG.query_dir()
     if not os.path.exists(query_dir):
         # Create the directory if it doesn't exist
+        #os.makedirs(query_dir, exist_ok=True)
+        query_dir = os.path.join(os.getcwd(), "files")
         os.makedirs(query_dir, exist_ok=True)
-        print(f"Query directory '{query_dir}' did not exist. It has been created.")
+        
+        #print(f"Query directory '{query_dir}' did not exist. It has been created.")
 
     n_random = np.int64(random_query_prob * len(query_log))
-    indices = np.random.randint(len(query_log), size=n_random)
+    indices = np_rng.randint(len(query_log), size=n_random)
 
     query_fnames = os.listdir(query_dir) if os.path.exists(query_dir) else []
     # pdb.set_trace()
@@ -183,22 +194,22 @@ def randomize_log(KG, query_log, random_query_prob=0.1, shuffle=False):
     # for index in indices:
     #     query_fname = random.choice(query_fnames)
     #     query_log[index] = load_question(os.path.join(KG.query_dir(), query_fname))
-    entities = random.choices(list(KG.triples_.keys()), k = n_random)
+    entities = rng.choices(list(KG.triples_.keys()), k = n_random)
     for i in range(len(indices)):
         index = indices[i]
         # query_log[index] = generate_query(KG, entities[i], chain_len=random.randint(1, 3), qid=index)
-        query_log[index] = generate_query(KG, entities[i], chain_len=1, qid=index)
+        query_log[index] = generate_query(KG, entities[i], chain_len=chain_len, qid=index, rng=rng)
 
         
 
     # Randomly shuffle the log
     if shuffle:
-        random.shuffle(query_log)
+        rng.shuffle(query_log)
 
     return query_log, indices
 
 def query_log_by_topics(KG, topics, n_mids_per_topic, n_queries_in_log,
-        topic_dist=None, shuffle=False, random_query_prob=0.1):
+        topic_dist=None, shuffle=False, random_query_prob=0.1, rng=None, np_rng=None):
     """
     :param KG: KnowledgeGraph
     :param topics: high-level topics in the log ("art", "music")
@@ -209,9 +220,11 @@ def query_log_by_topics(KG, topics, n_mids_per_topic, n_queries_in_log,
     :param random_query_prob: prob. of replacing a query with a random one
     :return query_log: list of query dicts
     """
+    rng, np_rng = _resolve_rngs(rng, np_rng)
+
     # Number of queries per topic
     n_topics = len(topics)
-    topic_dist = np.random.uniform(size=n_topics) if topic_dist is None else topic_dist
+    topic_dist = np_rng.uniform(size=n_topics) if topic_dist is None else topic_dist
     topic_dist /= np.sum(topic_dist)
     queries_per_topic = np.int64(np.ceil(topic_dist * n_queries_in_log))
 
@@ -220,16 +233,17 @@ def query_log_by_topics(KG, topics, n_mids_per_topic, n_queries_in_log,
     for n_topic_queries, topic in zip(queries_per_topic, topics):
         n_topic_queries = min(n_topic_queries, n_queries_in_log - len(query_log))
         query_log.extend(generate_queries_by_topic(
-            KG, topic, n_topic_queries, n_mids_per_topic))
+            KG, topic, n_topic_queries, n_mids_per_topic, rng=rng, np_rng=np_rng))
 
     # Replace some queries with random ones
     query_log, indices = randomize_log(KG, query_log,
-        random_query_prob=random_query_prob, shuffle=shuffle)
+        random_query_prob=random_query_prob, shuffle=shuffle, rng=rng, np_rng=np_rng)
 
     return query_log
 
 def query_log_by_mids(KG, topic_mids, n_queries_in_log,
-        topic_dist=None, shuffle=False, random_query_prob=0.1, whether_save = False):
+        topic_dist=None, shuffle=False, random_query_prob=0.1, whether_save = False,
+        chain_len=1, rng=None, np_rng=None):
     """
     :param KG: KnowledgeGraph
     :param topic_mids: topic entities in the log
@@ -239,9 +253,10 @@ def query_log_by_mids(KG, topic_mids, n_queries_in_log,
     :param random_query_prob: prob. of replacing a query with a random one
     :return query_log: list of query dicts
     """
+    rng, np_rng = _resolve_rngs(rng, np_rng)
     start_qid = 0
     n_topics = len(topic_mids)
-    topic_dist = np.random.uniform(size=n_topics) if topic_dist is None else topic_dist
+    topic_dist = np_rng.uniform(size=n_topics) if topic_dist is None else topic_dist
     topic_dist /= np.sum(topic_dist)
     queries_per_topic = np.int64(np.ceil(topic_dist * n_queries_in_log))
     # Get queries for each topic mid
@@ -249,12 +264,12 @@ def query_log_by_mids(KG, topic_mids, n_queries_in_log,
     for n_mid_queries, topic_mid in zip(queries_per_topic, topic_mids):
         n_mid_queries = min(n_mid_queries, n_queries_in_log - len(query_log))
         query_log.extend(generate_queries_by_mid(
-            KG, topic_mid, n_mid_queries, start_qid))
+            KG, topic_mid, n_mid_queries, start_qid, chain_len=chain_len, rng=rng))
         start_qid += n_mid_queries
 
     # Replace some queries with random ones
     query_log, indices = randomize_log(KG, query_log,
-        random_query_prob=random_query_prob, shuffle=shuffle)
+        random_query_prob=random_query_prob, shuffle=shuffle, chain_len=chain_len, rng=rng, np_rng=np_rng)
     if whether_save:
         logging.info('---Clear existing mid and query files---')
         for filename in os.listdir(KG.mid_dir()):

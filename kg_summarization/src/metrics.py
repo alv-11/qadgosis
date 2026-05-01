@@ -1,6 +1,12 @@
 import numpy as np
+import os
 
 from .query import answer_query
+
+# When set, use pre-stored answers from query['Parse']['Answers'] as ground truth
+# instead of re-running answer_query on the parent KG. This avoids building a
+# reverse index on the full evaluation graph (expensive for large KGs).
+_USE_STORED_ANSWERS = os.environ.get("QADGOSIS_CUSTOM_QUERY_BUNDLE_DIR") is not None
 
 
 def precision(tp, fp, fn):
@@ -44,7 +50,10 @@ def total_query_log_metrics(S, query_log):
     """
     tp = fp = fn = 0
     for query in query_log:
-        kg_matches = answer_query(S.parent(), query)
+        if _USE_STORED_ANSWERS:
+            kg_matches = {a['AnswerArgument'] for a in query['Parse'].get('Answers', [])}
+        else:
+            kg_matches = answer_query(S.parent(), query)
         summary_matches = answer_query(S, query)
 
         tp += len(summary_matches.intersection(kg_matches))

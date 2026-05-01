@@ -62,7 +62,7 @@ std::vector<int> compute_personalized_pagerank(
     int walk_length,
     double epsilon,
     const std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
-    const std::unordered_map<int, std::unordered_map<int, double>>& graph
+    const std::unordered_map<int, std::vector<int>>& graph
 );
 
 

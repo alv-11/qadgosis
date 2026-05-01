@@ -7,6 +7,10 @@ import pdb
 
 from collections import defaultdict
 
+# When set, answer_query traverses edges in reverse: find subjects s.t. s-[pred]->topic_mid.
+# Enable with: QADGOSIS_REVERSE_QUERY_EVAL=1
+REVERSE_QUERY_EVAL = os.environ.get("QADGOSIS_REVERSE_QUERY_EVAL", "0") == "1"
+
 
 """All questions are assumed to be JSON following the format
 outlined by the paper:
@@ -171,6 +175,19 @@ def answer_query(KG, query):
         index = constraint['SourceNodeIndex']
         constraints[index].append(constraint)
 
+    if REVERSE_QUERY_EVAL:
+        # Reverse traversal: find subjects where subject-[predicate]->current_targets.
+        # Builds a reverse index on the KG on first use (cached for subsequent calls).
+        KG.ensure_reverse_index()
+        result = {topic_mid}
+        for index, predicate in enumerate(inferential_chain):
+            candidates = set()
+            pred_idx = KG.reverse_triples_.get(predicate, {})
+            for target in result:
+                candidates.update(pred_idx.get(target, set()))
+            result = candidates
+        return result.difference({topic_mid})
+
     result = {topic_mid}
     for index, predicate in enumerate(inferential_chain):
         # Add candidate answer entities
@@ -195,7 +212,7 @@ def answer_query(KG, query):
     return result.difference({topic_mid}) # topic entity cannot be part of answer
 
 def generate_query(KG, topic_mid, chain_len=1, qid=0,
-        entity_names={}, constraint_index=None, exclude_preds=[]):
+    entity_names={}, constraint_index=None, exclude_preds=[], rng=None):
     """
     :param KG: object that can be accessed by {subject: {predicate: {object}}}
     :param topic_mid: str ID of the query's topic entity
@@ -206,6 +223,7 @@ def generate_query(KG, topic_mid, chain_len=1, qid=0,
     :param exclude_preds: predicates to exclude from generated query
     :return query: query following WebQSP query structure, without metadata/comments
     """
+    rng = random if rng is None else rng
     inferential_chain = []
     constraints = []
 
@@ -218,11 +236,11 @@ def generate_query(KG, topic_mid, chain_len=1, qid=0,
         if not predicates:
             break
 
-        predicate = random.choice(predicates)
+        predicate = rng.choice(predicates)
         inferential_chain.append(predicate)
 
         entities = KG[entity][predicate]
-        entity = random.choice(list(entities))
+        entity = rng.choice(list(entities))
 
     # Add constraints and get the answers
     result = {topic_mid}
@@ -236,16 +254,16 @@ def generate_query(KG, topic_mid, chain_len=1, qid=0,
                 candidates.update(KG[entity][predicate])
 
         if candidates and constraint_index == index:
-            entity = random.choice(list(candidates))
+            entity = rng.choice(list(candidates))
             predicates = [
                 pred for pred in KG[entity] if pred not in inferential_chain \
                     and pred not in exclude_preds
             ] if entity in KG else []
 
             if predicates:
-                predicate = random.choice(predicates)
+                predicate = rng.choice(predicates)
                 if KG[entity][predicate]:
-                    argument = random.choice(list(KG[entity][predicate]))
+                    argument = rng.choice(list(KG[entity][predicate]))
                     constraints.append({
                         'SourceNodeIndex': index,
                         'NodePredicate': predicate,
