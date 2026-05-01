@@ -200,6 +200,10 @@ def main():
         int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
         for timestep, query_list in queries_.items()
     }
+    # Ensure every timestep is present (C++ expects all keys 0..N-1)
+    for _t in range(total_timesteps):
+        if _t not in converted_queries:
+            converted_queries[_t] = {}
     progress_write(f"Prepared query map for {len(converted_queries)} timesteps.")
 
     initial_graph_started = time.perf_counter()

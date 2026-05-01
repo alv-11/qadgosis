@@ -49,6 +49,7 @@ class KnowledgeGraph(object):
         self.csr_matrix_indirect_heat_ = None
 
         self.triples_by_relation_id_ = {}
+        self.reverse_triples_ = None  # {predicate: {object: set(subjects)}}, built lazily on demand
 
     def _invalidate_cached_views(self):
         self.csr_matrix_ = None
@@ -59,6 +60,21 @@ class KnowledgeGraph(object):
         self.transition_matrix_ = None
         self.csr_matrix_indirect_heat_ = None
         self.triples_by_relation_id_ = {}
+
+    def ensure_reverse_index(self):
+        """Build reverse index {predicate: {object: set(subjects)}} if not already built."""
+        if self.reverse_triples_ is not None:
+            return
+        idx = {}
+        for subj, preds in self.triples_.items():
+            for pred, objs in preds.items():
+                if pred not in idx:
+                    idx[pred] = {}
+                for obj in objs:
+                    if obj not in idx[pred]:
+                        idx[pred][obj] = set()
+                    idx[pred][obj].add(subj)
+        self.reverse_triples_ = idx
 
     def _cache_triple_by_relation(self, triple):
         e1, r, e2 = triple

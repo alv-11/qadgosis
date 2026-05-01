@@ -4,13 +4,13 @@ import os
 DEFAULT_MAIN_RUNTIME_SETTINGS = {
     "num_walks": 20,
     "c": 2,
-    "epsilon": 0.9,
+    "epsilon": 0.90,
     "decay_rate": 0.8,
-    "window_size": 30,
-    "budget_ratio": 0.00001,
-    "baseline_methods": ["isummary"],#,"hhop_random", "hhop_random_outgoing", "ppr_frequency"],
+    "window_size": 100,
+    "budget_ratio": 0.05,
+    "baseline_methods": [],#,"hhop_random", "hhop_random_outgoing", "ppr_frequency"],
     "log_changes_in_topk": False,
-    "seed_mode": "topic_only", "answers_fallback_topic",
+    "seed_mode": "topic_only",# "answers_fallback_topic",
     "eval_decay_rate": 0.8,
 }
 
@@ -28,12 +28,17 @@ MAIN_RUNTIME_ENV_VARS = {
 }
 
 DEFAULT_QUERY_GENERATION_SETTINGS = {
-    "topic_count": 5,
-    "topic_change_ratio": 0.4,
-    "num_queries": 200,
+    "topic_count": 1,
+    "topic_change_ratio": 0.1,
+    "num_queries": 15,
     "shuffle": True,
-    "random_query_prob": 0.1,
+    "random_query_prob": 0.0,
     "chain_len": 1,
+    # Hard-query mode: answers not on shortest path, abrupt topic shifts.
+    "hard_query": True,
+    "min_shift_hops": 1,
+    "min_chain_len": 1,
+    "max_chain_len": 1,
 }
 
 QUERY_GENERATION_ENV_VARS = {
@@ -43,6 +48,10 @@ QUERY_GENERATION_ENV_VARS = {
     "shuffle": "QADGOSIS_QUERY_SHUFFLE",
     "random_query_prob": "QADGOSIS_QUERY_RANDOM_QUERY_PROB",
     "chain_len": "QADGOSIS_QUERY_CHAIN_LEN",
+    "hard_query": "QADGOSIS_QUERY_HARD",
+    "min_shift_hops": "QADGOSIS_QUERY_MIN_SHIFT_HOPS",
+    "min_chain_len": "QADGOSIS_QUERY_MIN_CHAIN_LEN",
+    "max_chain_len": "QADGOSIS_QUERY_MAX_CHAIN_LEN",
 }
 
 
@@ -166,6 +175,30 @@ def resolve_query_generation_settings(env=None):
             DEFAULT_QUERY_GENERATION_SETTINGS["chain_len"],
             int,
         ),
+        "hard_query": _resolve_scalar(
+            env,
+            QUERY_GENERATION_ENV_VARS["hard_query"],
+            DEFAULT_QUERY_GENERATION_SETTINGS["hard_query"],
+            _parse_bool,
+        ),
+        "min_shift_hops": _resolve_scalar(
+            env,
+            QUERY_GENERATION_ENV_VARS["min_shift_hops"],
+            DEFAULT_QUERY_GENERATION_SETTINGS["min_shift_hops"],
+            int,
+        ),
+        "min_chain_len": _resolve_scalar(
+            env,
+            QUERY_GENERATION_ENV_VARS["min_chain_len"],
+            DEFAULT_QUERY_GENERATION_SETTINGS["min_chain_len"],
+            int,
+        ),
+        "max_chain_len": _resolve_scalar(
+            env,
+            QUERY_GENERATION_ENV_VARS["max_chain_len"],
+            DEFAULT_QUERY_GENERATION_SETTINGS["max_chain_len"],
+            int,
+        ),
     }
 
 
@@ -192,4 +225,8 @@ def query_generation_settings_to_env(settings):
         QUERY_GENERATION_ENV_VARS["shuffle"]: "1" if settings["shuffle"] else "0",
         QUERY_GENERATION_ENV_VARS["random_query_prob"]: str(settings["random_query_prob"]),
         QUERY_GENERATION_ENV_VARS["chain_len"]: str(settings["chain_len"]),
+        QUERY_GENERATION_ENV_VARS["hard_query"]: "1" if settings["hard_query"] else "0",
+        QUERY_GENERATION_ENV_VARS["min_shift_hops"]: str(settings["min_shift_hops"]),
+        QUERY_GENERATION_ENV_VARS["min_chain_len"]: str(settings["min_chain_len"]),
+        QUERY_GENERATION_ENV_VARS["max_chain_len"]: str(settings["max_chain_len"]),
     }

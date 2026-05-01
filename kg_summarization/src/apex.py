@@ -422,16 +422,14 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
         for query in training:
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
-            topic_eid = KG.entity_id(parse['TopicEntityMid'])
-            #if topic_eid is None:
-            #    print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
-            #    continue
+            topic_eid = KG.entity_id_.get(parse['TopicEntityMid'])
+            if topic_eid is None:
+                continue
             relation = parse['InferentialChain'][0]
-            #try:
-            answers = KG[topic_mid][relation]
-            #except KeyError:
-            #    print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
-            #    continue
+            try:
+                answers = KG[topic_mid][relation]
+            except KeyError:
+                continue
             q[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -445,7 +443,9 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
         for query in training:
             parse = query['Parse']
             relation = parse['InferentialChain'][0]
-            r[KG.relation_id(relation)] += 1
+            rid = KG.relation_id_.get(relation)
+            if rid is not None:
+                r[rid] += 1
 
         # Initialize the Heat (H)
         H = {}
@@ -534,16 +534,14 @@ def APEX(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diameter
             q_T = np.zeros(KG.number_of_entities())
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
-            topic_eid = KG.entity_id(parse['TopicEntityMid'])
-            #if topic_eid is None:
-            #    print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
-            #    continue
+            topic_eid = KG.entity_id_.get(parse['TopicEntityMid'])
+            if topic_eid is None:
+                continue
             relation = parse['InferentialChain'][0]
-            #try:
-            answers = KG[topic_mid][relation]
-            #except KeyError:
-            #    print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
-            #    continue
+            try:
+                answers = KG[topic_mid][relation]
+            except KeyError:
+                continue
             q_T[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
             for i, item in enumerate(answers):
@@ -663,15 +661,13 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
         for query in training:
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
-            topic_eid = KG.entity_id(parse['TopicEntityMid'])
+            topic_eid = KG.entity_id_.get(parse['TopicEntityMid'])
             if topic_eid is None:
-                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
                 continue
             relation = parse['InferentialChain'][0]
             try:
                 answers = KG[topic_mid][relation]
             except KeyError:
-                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
                 continue
             q[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)
@@ -686,7 +682,9 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
         for query in training:
             parse = query['Parse']
             relation = parse['InferentialChain'][0]
-            r[KG.relation_id(relation)] += 1
+            rid = KG.relation_id_.get(relation)
+            if rid is not None:
+                r[rid] += 1
 
         # Initialize the Heat (H)
         H = {}
@@ -769,15 +767,13 @@ def APEX_(KG, K, training, query_log, query_num_per_test=1, gamma=GAMMA, diamete
             q_T = np.zeros(KG.number_of_entities())
             parse = query['Parse']
             topic_mid = parse['TopicEntityMid']
-            topic_eid = KG.entity_id(parse['TopicEntityMid'])
+            topic_eid = KG.entity_id_.get(parse['TopicEntityMid'])
             if topic_eid is None:
-                print(f"Skipping query: TopicEntityMid '{parse['TopicEntityMid']}' not found in KG")
                 continue
             relation = parse['InferentialChain'][0]
             try:
                 answers = KG[topic_mid][relation]
             except KeyError:
-                print(f"KeyError: topic_mid {topic_mid} or relation {relation} not found in KG")
                 continue
             q_T[topic_eid] += 1
             answers_rid = np.zeros(len(answers), dtype=int)

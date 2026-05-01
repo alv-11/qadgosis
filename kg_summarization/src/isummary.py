@@ -1,4 +1,5 @@
 from collections import Counter, defaultdict
+import os
 import networkx as nx
 
 from src.user import query_log_by_mids
@@ -456,6 +457,9 @@ class SummaryDBPedia:
         # Convert back to regular dict for consistency
         self.triples_ = dict(self.triples_)
 
+        # Reverse index (predicate -> {object -> set(subjects)}), built lazily
+        self.reverse_triples_ = None
+
     def __contains__(self, entity):
         """Check if entity exists in the summary."""
         return entity in self.entities_
@@ -510,6 +514,18 @@ class SummaryDBPedia:
     def relations(self):
         """Return all relations."""
         return self.relations_
+
+    def ensure_reverse_index(self):
+        """Build reverse index {predicate: {object: set(subjects)}} if not already built."""
+        if self.reverse_triples_ is not None:
+            return
+        idx = {}
+        for s, preds in self.triples_.items():
+            for p, objs in preds.items():
+                p_idx = idx.setdefault(p, {})
+                for o in objs:
+                    p_idx.setdefault(o, set()).add(s)
+        self.reverse_triples_ = idx
 
 
 def ISUMMARY(KG, target_triples, query_log, seed_mode="answers_fallback_topic"):

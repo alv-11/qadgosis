@@ -624,7 +624,7 @@ TopKResult calculate_top_k_cumulative_with_weights(
         double pv = pi_v[node];       // global popularity
 
         double alpha = epsilon;
-        double weight_others = (1.0 - alpha) * pu + alpha * pv;
+        double weight_others = (alpha) * pu + (1.0-alpha) * pv;
         //double weight_others = pu;
         weighted_scores_others.emplace_back(node, weight_others);
 

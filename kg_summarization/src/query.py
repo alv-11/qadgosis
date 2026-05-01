@@ -7,6 +7,10 @@ import pdb
 
 from collections import defaultdict
 
+# When set, answer_query traverses edges in reverse: find subjects s.t. s-[pred]->topic_mid.
+# Enable with: QADGOSIS_REVERSE_QUERY_EVAL=1
+REVERSE_QUERY_EVAL = os.environ.get("QADGOSIS_REVERSE_QUERY_EVAL", "0") == "1"
+
 
 """All questions are assumed to be JSON following the format
 outlined by the paper:
@@ -170,6 +174,19 @@ def answer_query(KG, query):
     for constraint in parse['Constraints']:
         index = constraint['SourceNodeIndex']
         constraints[index].append(constraint)
+
+    if REVERSE_QUERY_EVAL:
+        # Reverse traversal: find subjects where subject-[predicate]->current_targets.
+        # Builds a reverse index on the KG on first use (cached for subsequent calls).
+        KG.ensure_reverse_index()
+        result = {topic_mid}
+        for index, predicate in enumerate(inferential_chain):
+            candidates = set()
+            pred_idx = KG.reverse_triples_.get(predicate, {})
+            for target in result:
+                candidates.update(pred_idx.get(target, set()))
+            result = candidates
+        return result.difference({topic_mid})
 
     result = {topic_mid}
     for index, predicate in enumerate(inferential_chain):

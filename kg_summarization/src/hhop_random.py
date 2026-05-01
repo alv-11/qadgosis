@@ -104,7 +104,7 @@ def HHOP_RANDOM(KG, K, query_log, h=2, neighborhood_mode="both", random_state=No
     seed_entities = []
     for query in query_log:
         seed_entities.extend(
-            extract_query_seed_entities(query, seed_mode="answers_fallback_topic")
+            extract_query_seed_entities(query, seed_mode="topic_only")
         )
 
     neighborhood = _collect_h_hop_nodes(KG, seed_entities, h, neighborhood_mode)

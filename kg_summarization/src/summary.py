@@ -26,6 +26,7 @@ from src.apex import APEX
 from src.pagerank import PPR_FREQUENCY
 from src.progress import format_seconds, progress, progress_write
 from src.run_settings import resolve_query_generation_settings, resolve_main_runtime_settings
+from src.hard_query import generate_hard_query_logs, update_topics_abrupt
 
 
 ENABLE_SUMMARY_NODE_INVOLVEMENT_STATS = True
@@ -748,7 +749,7 @@ def _evaluate_stateless_baseline(summary_method, method_name, KG, t, K, training
 
     _log_baseline_summary_size(method_name, t, summary, requested_size=K)
 
-    total_F1, _, _ = total_query_log_metrics(summary, test_data[t])
+    total_F1, _, _ = total_query_log_metrics(summary, test_data[t]) if t in test_data else (float("nan"), None, None)
     present_row = {
         "Timestep": t,
         _present_col(method_label): total_F1,
@@ -1479,7 +1480,7 @@ def evaluate_sankofa_timestep(
     summary_runtime = time.time() - started
     _log_sankofa_summary(timestep, summary)
 
-    total_F1, _, _ = total_query_log_metrics(summary, test_data[timestep])
+    total_F1, _, _ = total_query_log_metrics(summary, test_data[timestep]) if timestep in test_data else (float("nan"), None, None)
 
     df_weight = process_all_timesteps(
         training_set=test_data,
@@ -1597,9 +1598,11 @@ class BaselineEngine:
         progress_write(
                 "Graph delta applied, running APEX"
             )
+        train_t = training_data.get(t, [])
+        test_t = test_data.get(t, [])
         if t == 0:
             P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
-                apex_KG, K, training_data[t], test_data[t], t=t
+                apex_KG, K, train_t, test_t, t=t
             )
         else:
             progress_write(
@@ -1613,7 +1616,7 @@ class BaselineEngine:
             )
             #try:
             P, H, q, e, r, csr, index_list, total_F1, run_time = APEX(
-                apex_KG, K, training_data[t], test_data[t],
+                apex_KG, K, train_t, test_t,
                 t=t,
                 H=H_prev,
                 q=q_prev,
@@ -1852,6 +1855,10 @@ def _query_generation_settings():
         "shuffle": query_settings["shuffle"],
         "random_query_prob": query_settings["random_query_prob"],
         "chain_len": query_settings["chain_len"],
+        "hard_query": query_settings["hard_query"],
+        "min_shift_hops": query_settings["min_shift_hops"],
+        "min_chain_len": query_settings["min_chain_len"],
+        "max_chain_len": query_settings["max_chain_len"],
     }
 
 
@@ -1873,6 +1880,12 @@ def _query_bundle_prefix(settings):
     )
     if settings.get("chain_len", 1) != 1:
         prefix += f"_cl{settings['chain_len']}"
+    if settings.get("hard_query", False):
+        prefix += (
+            f"_hq1"
+            f"_msh{settings.get('min_shift_hops', 3)}"
+            f"_mcl{settings.get('min_chain_len', 2)}p{settings.get('max_chain_len', 3)}"
+        )
     return prefix
 
 
@@ -1950,16 +1963,43 @@ def _query_bundle_id_from_name(bundle_name, settings):
     return int(match.group(1))
 
 
+# Keys added after the initial schema; old bundles lack them but were generated
+# with the equivalent default values.  When ALL of these are at their defaults
+# we accept bundles that simply omit them.
+_LEGACY_OPTIONAL_KEYS = frozenset({
+    "chain_len",
+    "hard_query",
+    "min_shift_hops",
+    "min_chain_len",
+    "max_chain_len",
+})
+_LEGACY_KEY_DEFAULTS = {
+    "chain_len": 1,
+    "hard_query": False,
+    "min_shift_hops": 3,
+    "min_chain_len": 2,
+    "max_chain_len": 3,
+}
+
+
 def _query_bundle_is_valid(bundle_dir, metadata, settings, snapshot_metadata):
     if not isinstance(metadata, dict):
         return False
     stored = metadata.get("generation_settings")
     if stored != settings:
-        # When chain_len is 1 (the implicit default for old bundles), also accept
-        # metadata that matches settings minus the chain_len key.
-        if settings.get("chain_len", 1) == 1:
-            settings_without_chain_len = {k: v for k, v in settings.items() if k != "chain_len"}
-            if stored != settings_without_chain_len:
+        # Backward-compat: old bundles may omit keys that were added later but
+        # whose implicit value equals the current default.  Accept such bundles
+        # only when every new key in the current settings is at its default.
+        all_new_at_default = all(
+            settings.get(k, v) == v
+            for k, v in _LEGACY_KEY_DEFAULTS.items()
+        )
+        if all_new_at_default:
+            settings_legacy = {
+                k: v for k, v in settings.items()
+                if k not in _LEGACY_OPTIONAL_KEYS
+            }
+            if stored != settings_legacy:
                 return False
         else:
             return False
@@ -2104,26 +2144,51 @@ def _generate_query_bundles(subgraph_dir, snapshot_files, settings, bundle_ids, 
             kg_load_seconds = time.perf_counter() - kg_load_started
 
             bundle_futures = []
+            hard_mode = settings.get("hard_query", False)
             for bundle_id, state in bundle_states.items():
-                current_topics = update_topics_fixed(
-                    state["prev_topics"],
-                    KG,
-                    K=settings["topic_count"],
-                    change_ratio=settings["topic_change_ratio"],
-                    rng=state["rng"],
-                )
-                state["prev_topics"] = current_topics
-                future = executor.submit(
-                    generate_query_logs,
-                    KG,
-                    timestep,
-                    current_topics,
-                    num_queries=settings["num_queries"],
-                    shuffle=settings["shuffle"],
-                    random_query_prob=settings["random_query_prob"],
-                    rng=state["rng"],
-                    np_rng=state["np_rng"],
-                )
+                if hard_mode:
+                    current_topics = update_topics_abrupt(
+                        state["prev_topics"],
+                        KG,
+                        K=settings["topic_count"],
+                        min_shift_hops=settings.get("min_shift_hops", 3),
+                        rng=state["rng"],
+                    )
+                    state["prev_topics"] = current_topics
+                    future = executor.submit(
+                        generate_hard_query_logs,
+                        KG,
+                        timestep,
+                        current_topics,
+                        num_queries=settings["num_queries"],
+                        min_chain_len=settings.get("min_chain_len", 2),
+                        max_chain_len=settings.get("max_chain_len", 3),
+                        shuffle=settings["shuffle"],
+                        random_query_prob=settings["random_query_prob"],
+                        rng=state["rng"],
+                        np_rng=state["np_rng"],
+                    )
+                else:
+                    current_topics = update_topics_fixed(
+                        state["prev_topics"],
+                        KG,
+                        K=settings["topic_count"],
+                        change_ratio=settings["topic_change_ratio"],
+                        rng=state["rng"],
+                    )
+                    state["prev_topics"] = current_topics
+                    future = executor.submit(
+                        generate_query_logs,
+                        KG,
+                        timestep,
+                        current_topics,
+                        num_queries=settings["num_queries"],
+                        shuffle=settings["shuffle"],
+                        random_query_prob=settings["random_query_prob"],
+                        chain_len=settings.get("chain_len", 1),
+                        rng=state["rng"],
+                        np_rng=state["np_rng"],
+                    )
                 bundle_futures.append((bundle_id, current_topics, future))
 
             timestep_queries = 0
@@ -2284,6 +2349,61 @@ def _load_query_splits_from_bundle(bundle_dir, snapshot_files, seed_mode="topic_
     return training_data, test_data, queries_
 
 
+def _load_query_splits_prequential(bundle_dir, snapshot_files, seed_mode="topic_only"):
+    """Prequential (online) split: test on all current-snapshot queries, seed from previous snapshot.
+
+    At each timestep t:
+      - test_data[t]     = all queries from snapshot t  (evaluated "before training on them")
+      - training_data[t] = all queries from snapshot t-1 (seeds derived from already-seen data)
+
+    _merged_training_logs(window=2) will naturally pick up the two most-recent training entries.
+    """
+    training_data, test_data, queries_ = {}, {}, {}
+
+    load_steps = progress(
+        enumerate(snapshot_files),
+        total=len(snapshot_files),
+        desc=f"Loading query bundle {bundle_dir.name} (prequential)",
+        unit="snapshot",
+        leave=False,
+    )
+    prev_query_log = None
+    prev_timestep = None
+    for timestep, file_name in load_steps:
+        with _query_log_path(bundle_dir, timestep).open("rb") as handle:
+            query_log = pickle.load(handle)
+
+        query_count = len(query_log) if query_log else 0
+
+        # Training/seed at this timestep comes from the *previous* snapshot's queries
+        if prev_query_log:
+            training_data[timestep] = prev_query_log
+            queries_[timestep], seed_stats = _build_seed_node_list(
+                prev_query_log,
+                return_stats=True,
+                seed_mode=seed_mode,
+            )
+            _log_query_seed_resolution(bundle_dir, timestep, file_name, seed_stats)
+
+        if query_log:
+            # All queries go into test — evaluated at t and (via decay weights) at future steps
+            test_data[timestep] = query_log
+            prev_query_log = query_log
+            prev_timestep = timestep
+        else:
+            prev_query_log = None
+            prev_timestep = None
+
+        load_steps.set_postfix(
+            snapshot=file_name,
+            queries=query_count,
+            train=len(training_data.get(timestep, [])),
+            test=len(test_data.get(timestep, [])),
+        )
+
+    return training_data, test_data, queries_
+
+
 def generate_query_logs(graph, timestep, topic_mids, num_queries=200, *, shuffle=True,
     random_query_prob=0, chain_len=1, rng=None, np_rng=None):
     """Generate query logs using given topics."""
@@ -2355,6 +2475,17 @@ def prepare_queries_and_splits(subgraph_dir, query_bundle_index=None, seed_mode=
     if not snapshot_files:
         raise ValueError(f"No snapshot_*.nt.gz files found in {subgraph_dir}")
 
+    custom_bundle_dir = os.environ.get("QADGOSIS_CUSTOM_QUERY_BUNDLE_DIR")
+    if custom_bundle_dir:
+        bundle_dir = Path(custom_bundle_dir).resolve()
+        training_data, test_data, queries_ = _load_query_splits_prequential(
+            bundle_dir,
+            snapshot_files,
+            seed_mode=seed_mode,
+        )
+        progress_write(f"Prepared query logs from custom bundle at {bundle_dir} (prequential mode).")
+        return training_data, test_data, queries_, snapshot_files
+
     selected_bundle = _ensure_query_bundle(
         subgraph_dir,
         snapshot_files,
@@ -2383,6 +2514,16 @@ def prepare_query_bundles(subgraph_dir, query_bundle_indices):
 
     if not snapshot_files:
         raise ValueError(f"No snapshot_*.nt.gz files found in {subgraph_dir}")
+
+    custom_bundle_dir = os.environ.get("QADGOSIS_CUSTOM_QUERY_BUNDLE_DIR")
+    if custom_bundle_dir:
+        bundle_dir = Path(custom_bundle_dir).resolve()
+        selected_bundles = [
+            {"bundle_id": idx, "bundle_name": bundle_dir.name, "bundle_dir": bundle_dir, "status": "custom"}
+            for idx in (query_bundle_indices or [1])
+        ]
+        progress_write(f"Using custom query bundle at {bundle_dir} for all runs.")
+        return selected_bundles, snapshot_files
 
     selected_bundles = _ensure_query_bundles(
         subgraph_dir,
