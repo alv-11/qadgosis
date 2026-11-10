@@ -105,9 +105,11 @@ triple selection. The embedding model is trained separately from each current
 snapshot, using all current query seed nodes plus up to 10,000 sampled graph
 nodes as walk starts. Set `QADGOSIS_USE_RDF2VEC=1` to enable it; set
 `QADGOSIS_RDF2VEC_WEIGHT` between 0 and 1 to control the embedding contribution
-when ranking boundary triples (default `0.5`). The remaining triples outside
-the internal and boundary groups are ranked by cosine similarity to the query
-seed vector instead of sampled randomly.
+when ranking both boundary triples and the remaining outside/random triples
+(default `0.5`). The complementary weight is applied to normalized PPR scores:
+0 means PPR-only ranking, 1 means embedding-only ranking, and 0.5 gives both
+equal weight. If no candidate embeddings are available, the existing PPR-based
+weighted-sampling fallback is used.
 
 The supplied embedding routine learns vectors for entity nodes from walks on
 the entity adjacency graph. In this initial integration, the query vector is

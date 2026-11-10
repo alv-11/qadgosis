@@ -224,7 +224,7 @@ class SummaryGraph(KnowledgeGraph):
         cand, w = self._compute_boundary_candidates()
 
         remaining = max(0, max_triples - self.triple_count) if max_triples is not None else len(cand)
-        self.random_padding_order = self._rank_boundary_candidates(cand, w, remaining)
+        self.random_padding_order = self._rank_candidates_by_ppr_and_embedding(cand, w, remaining)
         self.boundary_sampled_count = len(self.random_padding_order)
         self.random_padding_index = 0
 
@@ -279,7 +279,8 @@ class SummaryGraph(KnowledgeGraph):
             return [1.0] * len(values)
         return [(value - low) / (high - low) for value in values]
 
-    def _rank_boundary_candidates(self, candidates, ppr_weights, limit):
+    def _rank_candidates_by_ppr_and_embedding(self, candidates, ppr_weights, limit):
+        """Rank candidate triples using the configured PPR/embedding blend."""
         if limit <= 0 or not candidates:
             return []
         similarities = [self._triple_query_similarity(triple) for triple in candidates]
@@ -605,17 +606,7 @@ class SummaryGraph(KnowledgeGraph):
 
         self.random_candidate_count = max(self.random_candidate_count, len(cand))
 
-        similarities = [self._triple_query_similarity(triple) for triple in cand]
-        if similarities and any(similarity is not None for similarity in similarities):
-            selected = [
-                triple
-                for triple, _ in sorted(
-                    zip(cand, [-1.0 if value is None else value for value in similarities]),
-                    key=lambda item: (-item[1], item[0]),
-                )[:remaining]
-            ]
-        else:
-            selected = weighted_sampling(cand, w, remaining)
+        selected = self._rank_candidates_by_ppr_and_embedding(cand, w, remaining)
         added = 0
 
         for triple in selected:
