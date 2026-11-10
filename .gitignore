@@ -4,6 +4,11 @@
 *.gz
 *.pkl
 *.nt
-git clone https://amabainson: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@github.com/amabainson/qadgosis.git
+*.lock
+!.vscode/
+!.vscode/*.json
+/.venv/
+kg_summarization/src/core/build/
+kg_summarization/src/core/*.so
 **/.DS_Store
 

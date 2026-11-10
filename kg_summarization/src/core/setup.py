@@ -1,3 +1,5 @@
+import sys
+
 from setuptools import setup, Extension
 import pybind11
 
@@ -9,7 +11,10 @@ class BuildExtWithGPP(build_ext):
         compiler = self.compiler
         for ext in self.extensions:
             ext.extra_compile_args = ["-O2", "-std=c++17", "-D_GLIBCXX_USE_CXX11_ABI=0"]
-        compiler.compiler_so[0] = "g++"  # Set the compiler to g++
+        # On macOS, the system C++ compiler is clang. Linux keeps the
+        # original g++ behavior.
+        if sys.platform != "darwin":
+            compiler.compiler_so[0] = "g++"
         super().build_extensions()
 
 
@@ -20,7 +25,7 @@ ext_modules = [
         ["sankofa.cpp"],  # Include only the file with the `PYBIND11_MODULE` definition
         include_dirs=[pybind11.get_include()],
         language="c++",
-        extra_link_args=["-O2", "-lstdc++", "-luuid"]
+        extra_link_args=["-O2"] if sys.platform == "darwin" else ["-O2", "-lstdc++", "-luuid"]
     )
 ]
 

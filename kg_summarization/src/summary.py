@@ -175,7 +175,18 @@ def weighted_sampling(items, weights, k):
 
 class SummaryGraph(KnowledgeGraph):
 
-    def __init__(self, KG, top_k_nodes, non_top_k_nodes, max_triples=None, batch_size=10):
+    def __init__(
+        self,
+        KG,
+        top_k_nodes,
+        non_top_k_nodes,
+        max_triples=None,
+        batch_size=10,
+        *,
+        query_nodes=None,
+        node_embeddings=None,
+        embedding_weight=0.5,
+    ):
         super().__init__()
 
         self.parent_ = KG
@@ -184,6 +195,9 @@ class SummaryGraph(KnowledgeGraph):
         self.max_triples = max_triples
         self.batch_size = batch_size
         self.non_top_k_nodes = non_top_k_nodes
+        self.node_embeddings = node_embeddings or {}
+        self.embedding_weight = min(1.0, max(0.0, float(embedding_weight)))
+        self.query_vector = self._build_query_vector(query_nodes or [])
 
         self.triple_count = 0
         self.triples_set = set()
@@ -209,8 +223,8 @@ class SummaryGraph(KnowledgeGraph):
         # Boundary candidates 
         cand, w = self._compute_boundary_candidates()
 
-        remaining = max_triples - self.triple_count
-        self.random_padding_order = weighted_sampling(cand, w, remaining)
+        remaining = max(0, max_triples - self.triple_count) if max_triples is not None else len(cand)
+        self.random_padding_order = self._rank_boundary_candidates(cand, w, remaining)
         self.boundary_sampled_count = len(self.random_padding_order)
         self.random_padding_index = 0
 
@@ -226,6 +240,63 @@ class SummaryGraph(KnowledgeGraph):
 
     def _limit_reached(self):
         return self.max_triples is not None and self.triple_count >= self.max_triples
+
+    def _embedding_for(self, node):
+        try:
+            return self.node_embeddings.get(int(node))
+        except (TypeError, ValueError):
+            return None
+
+    def _build_query_vector(self, query_nodes):
+        vectors = [self._embedding_for(node) for node in query_nodes]
+        vectors = [vector for vector in vectors if vector is not None]
+        if not vectors:
+            return None
+        vector = np.mean(np.asarray(vectors, dtype=np.float32), axis=0)
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm > 0 else None
+
+    def _triple_query_similarity(self, triple):
+        if self.query_vector is None:
+            return None
+        subject_vector = self._embedding_for(triple[0])
+        object_vector = self._embedding_for(triple[2])
+        if subject_vector is None or object_vector is None:
+            return None
+        triple_vector = (subject_vector + object_vector) / 2.0
+        norm = np.linalg.norm(triple_vector)
+        if norm == 0:
+            return None
+        return float(np.dot(self.query_vector, triple_vector / norm))
+
+    @staticmethod
+    def _min_max_normalize(values):
+        if not values:
+            return []
+        low = min(values)
+        high = max(values)
+        if high == low:
+            return [1.0] * len(values)
+        return [(value - low) / (high - low) for value in values]
+
+    def _rank_boundary_candidates(self, candidates, ppr_weights, limit):
+        if limit <= 0 or not candidates:
+            return []
+        similarities = [self._triple_query_similarity(triple) for triple in candidates]
+        if all(similarity is None for similarity in similarities):
+            return weighted_sampling(candidates, ppr_weights, limit)
+        similarities = [(-1.0 if similarity is None else similarity) for similarity in similarities]
+
+        ppr_scores = self._min_max_normalize(ppr_weights)
+        similarity_scores = [(similarity + 1.0) / 2.0 for similarity in similarities]
+        ranked = sorted(
+            zip(candidates, ppr_scores, similarity_scores),
+            key=lambda item: (
+                -((1.0 - self.embedding_weight) * item[1] + self.embedding_weight * item[2]),
+                item[0],
+            ),
+        )
+        return [triple for triple, _, _ in ranked[:limit]]
 
     def _try_add_triple(self, triple):
         if triple not in self.triples_set:
@@ -534,7 +605,17 @@ class SummaryGraph(KnowledgeGraph):
 
         self.random_candidate_count = max(self.random_candidate_count, len(cand))
 
-        selected = weighted_sampling(cand, w, remaining)
+        similarities = [self._triple_query_similarity(triple) for triple in cand]
+        if similarities and any(similarity is not None for similarity in similarities):
+            selected = [
+                triple
+                for triple, _ in sorted(
+                    zip(cand, [-1.0 if value is None else value for value in similarities]),
+                    key=lambda item: (-item[1], item[0]),
+                )[:remaining]
+            ]
+        else:
+            selected = weighted_sampling(cand, w, remaining)
         added = 0
 
         for triple in selected:
@@ -1470,13 +1551,25 @@ def evaluate_sankofa_timestep(
     *,
     max_triples=None,
     walk_runtime=None,
+    query_nodes=None,
+    node_embeddings=None,
+    embedding_weight=0.5,
+    embedding_runtime=0.0,
 ):
     top_k_nodes = {str(n): v for n, v in top_k_nodes.items()}
     non_top_k_nodes = {str(n): v for n, v in global_pr.items()}
     non_top_k_nodes = {k: v for k, v in non_top_k_nodes.items() if k not in top_k_nodes}
 
     started = time.time()
-    summary = SummaryGraph(KG, top_k_nodes, non_top_k_nodes, max_triples)
+    summary = SummaryGraph(
+        KG,
+        top_k_nodes,
+        non_top_k_nodes,
+        max_triples,
+        query_nodes=query_nodes,
+        node_embeddings=node_embeddings,
+        embedding_weight=embedding_weight,
+    )
     summary_runtime = time.time() - started
     _log_sankofa_summary(timestep, summary)
 
@@ -1497,7 +1590,8 @@ def evaluate_sankofa_timestep(
     sankofa_row = pd.DataFrame([
         {
             "Timestep": int(timestep),
-            "Runtime (seconds)": summary_runtime + walk_seconds,
+            "Runtime (seconds)": summary_runtime + walk_seconds + float(embedding_runtime),
+            "Embedding Runtime (seconds)": float(embedding_runtime),
             "Future Test F1": total_F1,
             "Past Unseen Query F1": weighted_future_f1,
         }

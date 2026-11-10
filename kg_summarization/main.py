@@ -23,6 +23,7 @@ from src.sankofa_delta import (
     load_triple_delta,
 )
 from src.summary import BaselineEngine, evaluate_sankofa_timestep, prepare_queries_and_splits
+from src.rdf2vec import adjacency_from_knowledge_graph, build_rdf2vec_embeddings, embedding_lookup
 
 
 run_dir = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(".").resolve()
@@ -296,6 +297,23 @@ def main():
             f"topk={top_k_count} walk={format_seconds(step_runtime)}; evaluating Sankofa summary..."
         )
 
+        node_embeddings = None
+        embedding_runtime = 0.0
+        timestep_query_nodes = queries_.get(t, [])
+        if runtime_settings["use_rdf2vec"]:
+            embedding_started = time.perf_counter()
+            rdf_graph = adjacency_from_knowledge_graph(evaluation_graph)
+            rdf_node_ids, rdf_vectors = build_rdf2vec_embeddings(
+                rdf_graph,
+                timestep_query_nodes,
+            )
+            node_embeddings = embedding_lookup(rdf_node_ids, rdf_vectors)
+            embedding_runtime = time.perf_counter() - embedding_started
+            progress_write(
+                f"{step_label}: RDF2Vec embeddings ready for "
+                f"{len(node_embeddings):,} nodes in {format_seconds(embedding_runtime)}."
+            )
+
         sankofa_triples, sankofa_df, sankofa_summary_composition_df = evaluate_sankofa_timestep(
             t,
             evaluation_graph,
@@ -305,6 +323,10 @@ def main():
             global_pr=results.get("global_pr", {}).get(t, {}),
             max_triples=summary_size,
             walk_runtime=step_runtime,
+            query_nodes=timestep_query_nodes,
+            node_embeddings=node_embeddings,
+            embedding_weight=runtime_settings["rdf2vec_embedding_weight"],
+            embedding_runtime=embedding_runtime,
         )
 
         triples_no[t] = sankofa_triples
@@ -421,6 +443,8 @@ def main():
                 "window_size": runtime_settings["window_size"],
                 "budget_ratio": b,
                 "baseline_methods": baseline_methods,
+                "use_rdf2vec": runtime_settings["use_rdf2vec"],
+                "rdf2vec_embedding_weight": runtime_settings["rdf2vec_embedding_weight"],
             },
             "query_generation_settings": query_generation_settings,
             "outputs": {

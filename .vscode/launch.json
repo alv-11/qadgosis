@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SANKOFA: run small test graph",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/kg_summarization/main.py",
+      "cwd": "${workspaceFolder}/kg_summarization",
+      "console": "integratedTerminal",
+      "env": {
+        "QADGOSIS_SUBGRAPH_DIR": "${workspaceFolder}/kg_summarization/data/test_small",
+        "QADGOSIS_QUERY_NUM_QUERIES": "5",
+        "QADGOSIS_NUM_WALKS": "2",
+        "QADGOSIS_USE_RDF2VEC": "1",
+        "QADGOSIS_RDF2VEC_WEIGHT": "0.5"
+      }
+    }
+  ]
+}

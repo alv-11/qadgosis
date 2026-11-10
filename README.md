@@ -98,6 +98,29 @@ Cache behavior:
 - Query-dependent dummy-node overlays are not cached. They are still applied at runtime inside Sankofa.
 - This optimization currently targets Sankofa Phase 1 only. The later evaluation and baseline steps still load full snapshots through the existing Python path.
 
+## RDF2Vec-guided Summary Selection
+
+RDF2Vec-style node embeddings can be enabled to guide the non-internal summary
+triple selection. The embedding model is trained separately from each current
+snapshot, using all current query seed nodes plus up to 10,000 sampled graph
+nodes as walk starts. Set `QADGOSIS_USE_RDF2VEC=1` to enable it; set
+`QADGOSIS_RDF2VEC_WEIGHT` between 0 and 1 to control the embedding contribution
+when ranking boundary triples (default `0.5`). The remaining triples outside
+the internal and boundary groups are ranked by cosine similarity to the query
+seed vector instead of sampled randomly.
+
+The supplied embedding routine learns vectors for entity nodes from walks on
+the entity adjacency graph. In this initial integration, the query vector is
+the mean vector of its training seed nodes, and a candidate triple vector is
+the mean of its subject and object vectors. Predicate labels are not embedded
+yet, so triples between the same entities but with different predicates get
+the same embedding similarity. Embedding training is run once per timestep and
+its runtime is included in `sankofa_results.csv`.
+
+Install the added dependency with `python -m pip install -r requirements.txt`.
+The VS Code launch configuration enables RDF2Vec for the small test graph.
+For a terminal run, set `QADGOSIS_USE_RDF2VEC=1` before `python main.py`.
+
 If you want to force a rebuild, delete the corresponding cache directory or call
 `ensure_sankofa_delta_cache(..., rebuild=True)` from Python.
 

@@ -12,6 +12,8 @@ DEFAULT_MAIN_RUNTIME_SETTINGS = {
     "log_changes_in_topk": False,
     "seed_mode": "topic_only",# "answers_fallback_topic",
     "eval_decay_rate": 0.8,
+    "use_rdf2vec": False,
+    "rdf2vec_embedding_weight": 0.5,
 }
 
 MAIN_RUNTIME_ENV_VARS = {
@@ -25,6 +27,8 @@ MAIN_RUNTIME_ENV_VARS = {
     "log_changes_in_topk": "QADGOSIS_LOG_CHANGES_IN_TOPK",
     "seed_mode": "QADGOSIS_SEED_MODE",
     "eval_decay_rate": "QADGOSIS_EVAL_DECAY_RATE",
+    "use_rdf2vec": "QADGOSIS_USE_RDF2VEC",
+    "rdf2vec_embedding_weight": "QADGOSIS_RDF2VEC_WEIGHT",
 }
 
 DEFAULT_QUERY_GENERATION_SETTINGS = {
@@ -131,6 +135,18 @@ def resolve_main_runtime_settings(env=None):
             env,
             MAIN_RUNTIME_ENV_VARS["eval_decay_rate"],
             DEFAULT_MAIN_RUNTIME_SETTINGS["eval_decay_rate"],
+            float,
+        ),
+        "use_rdf2vec": _resolve_scalar(
+            env,
+            MAIN_RUNTIME_ENV_VARS["use_rdf2vec"],
+            DEFAULT_MAIN_RUNTIME_SETTINGS["use_rdf2vec"],
+            _parse_bool,
+        ),
+        "rdf2vec_embedding_weight": _resolve_scalar(
+            env,
+            MAIN_RUNTIME_ENV_VARS["rdf2vec_embedding_weight"],
+            DEFAULT_MAIN_RUNTIME_SETTINGS["rdf2vec_embedding_weight"],
             float,
         ),
     }
