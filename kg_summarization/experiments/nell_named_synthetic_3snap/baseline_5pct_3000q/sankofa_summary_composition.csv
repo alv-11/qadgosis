@@ -1,0 +1,4 @@
+Timestep,Summary Triple Count,Summary Entity Count,TopK Node Count,Summary Budget,Reverse Index Target Count,Reverse Index Link Count,Internal Triple Count,Internal Candidate Triple Count,Internal Triple Percentage,Boundary Triple Count,Boundary Candidate Triple Count,Boundary Sampled Triple Count,Boundary Triple Percentage,Random Triple Count,Random Candidate Triple Count,Random Triple Percentage,Node Triple Involvement Mean,Node Triple Involvement Median,Node Triple Involvement Mode
+0,7272,3951,182,7272,176,14928,552,552,7.590759075907591,2756,29743,7272,37.8987898789879,3964,156116,54.51045104510451,3.680587193115667,1.0,1
+1,7272,4543,393,7272,390,31231,1976,1976,27.172717271727173,5296,62374,7272,72.82728272827283,0,0,0.0,3.2000880475456746,1.0,1
+2,7272,3984,583,7272,578,38899,3154,3154,43.37183718371837,4118,77719,7272,56.62816281628163,0,0,0.0,3.6490963855421685,1.0,1

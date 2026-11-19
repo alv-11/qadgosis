@@ -4,6 +4,9 @@ import os
 DEFAULT_MAIN_RUNTIME_SETTINGS = {
     "num_walks": 20,
     "c": 2,
+    # SANKOFA's beta is the probability of following the graph; epsilon here
+    # is the complementary restart/teleport probability (epsilon = 1 - beta).
+    # Thus the default epsilon=0.90 corresponds to beta=0.10.
     "epsilon": 0.90,
     "decay_rate": 0.8,
     "window_size": 100,

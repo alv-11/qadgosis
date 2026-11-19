@@ -10,5 +10,6 @@
 /.venv/
 kg_summarization/src/core/build/
 kg_summarization/src/core/*.so
+/kg_summarization/data/nell_named_synthetic_3snap/
 **/.DS_Store
 

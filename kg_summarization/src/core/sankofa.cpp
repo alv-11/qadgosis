@@ -1,6 +1,8 @@
 
 #include "sankofa.h"
 #include "mc_algo.h"
+#include <cstdlib>
+#include <stdexcept>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 namespace py = pybind11;
@@ -24,6 +26,28 @@ constexpr double kGraphScaleFactor = 10.0;
 constexpr double kRawEdgeWeight = 0.01;
 constexpr double kScaledEdgeWeight = kRawEdgeWeight / kGraphScaleFactor;
 
+unsigned int configured_random_seed() {
+    const char* raw_seed = std::getenv("QADGOSIS_RANDOM_SEED");
+    if (raw_seed && *raw_seed) {
+        try {
+            return static_cast<unsigned int>(std::stoul(raw_seed));
+        } catch (const std::exception&) {
+            throw std::invalid_argument("QADGOSIS_RANDOM_SEED must be an unsigned integer");
+        }
+    }
+    std::random_device random_source;
+    return random_source();
+}
+
+std::mt19937& sankofa_random_engine() {
+    static std::mt19937 engine(configured_random_seed());
+    return engine;
+}
+
+void reseed_sankofa_random_engine() {
+    sankofa_random_engine().seed(configured_random_seed());
+}
+
 vector<int> extract_query_nodes(const unordered_map<int, int>& queries) {
     vector<int> query_nodes;
     query_nodes.reserve(queries.size());
@@ -34,6 +58,10 @@ vector<int> extract_query_nodes(const unordered_map<int, int>& queries) {
 
 int dummy_node_for_timestep(int timestep) {
     return kDummyNodeBase + timestep;
+}
+
+bool is_dummy_node(int node) {
+    return node >= kDummyNodeBase;
 }
 
 void scale_graph_in_place(Graph_& graph) {
@@ -56,6 +84,7 @@ DirectedGraph build_directed_graph(const Graph_& graph) {
         adjacency.reserve(neighbors.size());
         for (const auto& [target, _weight] : neighbors)
             adjacency.push_back(target);
+        std::sort(adjacency.begin(), adjacency.end());
     }
     return directed_graph;
 }
@@ -84,7 +113,15 @@ void refresh_weighted_transitions_for_node(
     neighbor_list.reserve(graph_it->second.size());
     weight_list.reserve(graph_it->second.size());
 
-    for (const auto& [target, weight] : graph_it->second) {
+    std::vector<std::pair<int, double>> ordered_neighbors(
+        graph_it->second.begin(), graph_it->second.end()
+    );
+    std::sort(ordered_neighbors.begin(), ordered_neighbors.end(),
+        [](const auto& left, const auto& right) {
+            return left.first < right.first;
+        }
+    );
+    for (const auto& [target, weight] : ordered_neighbors) {
         neighbor_list.push_back(target);
         weight_list.push_back(weight);
     }
@@ -258,14 +295,22 @@ RandomWalkResult generate_random_walks_directed_weighted(
     double epsilon
 ) {
     RandomWalkResult result;
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    auto& gen = sankofa_random_engine();
     std::uniform_real_distribution<> stop_dis(0.0, 1.0);
 
-    // Get all starting nodes
-    std::vector<int> nodes;
-    for (const auto& p : weighted_graph)
-        nodes.push_back(p.first);
+    // Generate a segment for every real entity, including entities that only
+    // occur as objects. The temporary query dummy is never part of this bank.
+    std::unordered_set<int> node_set;
+    for (const auto& [source, neighbors] : weighted_graph) {
+        if (!is_dummy_node(source))
+            node_set.insert(source);
+        for (const auto& [target, _weight] : neighbors) {
+            if (!is_dummy_node(target))
+                node_set.insert(target);
+        }
+    }
+    std::vector<int> nodes(node_set.begin(), node_set.end());
+    std::sort(nodes.begin(), nodes.end());
 
     // For each node, generate `walks_per_node` walks
     for (int start_node : nodes) {
@@ -309,27 +354,34 @@ RandomWalkResult generate_random_walks_directed_weighted(
 
 
 
-RandomWalkResult update_random_walks_directed_with_weights(
+void update_random_walks_directed_with_weights(
     const WeightedTransitionLookup& weighted_transitions,
     std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
     const GraphChanges& changes,
     int num_walks,
     double epsilon
 ) {
-    RandomWalkResult result;
 
     using RNG = std::mt19937;
-    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-    RNG rng(seed);
+    RNG& rng = sankofa_random_engine();
     std::uniform_real_distribution<> stop_dis(0.0, 1.0);
 
-    // Handle removed nodes
-    for (int node : changes.nodes_removed) {
-        precomputed_walks.erase(node);  // Remove entire entry
+    // Remove the stored segments of deleted entities. Dummy query nodes are
+    // temporary PPR starts, never persistent walk-bank entities.
+    for (int node : changes.nodes_removed)
+        precomputed_walks.erase(node);
+    for (auto it = precomputed_walks.begin(); it != precomputed_walks.end();) {
+        if (is_dummy_node(it->first))
+            it = precomputed_walks.erase(it);
+        else
+            ++it;
     }
 
-    // Handle added nodes (generate fresh walks)
+    // New entities receive the same number of fresh segments as entities at
+    // the initial snapshot.
     for (int node : changes.nodes_added) {
+        if (is_dummy_node(node))
+            continue;
         std::vector<std::vector<int>> walks;
         for (int i = 0; i < num_walks; ++i) {
             std::vector<int> walk = {node};
@@ -349,22 +401,30 @@ RandomWalkResult update_random_walks_directed_with_weights(
         precomputed_walks[node] = std::move(walks);
     }
 
-    // Handle edge removals — truncate any walks that pass through a removed edge
+    // A deleted edge invalidates a segment from its first occurrence onward.
+    // Re-extend only that segment, to its old length, using transitions from
+    // the already-updated graph.
     for (auto& [node, walks] : precomputed_walks) {
+        if (is_dummy_node(node))
+            continue;
         for (auto& walk : walks) {
+            if (walk.empty())
+                continue;
+            const size_t original_length = walk.size();
+            size_t truncate_at = walk.size();
             for (size_t i = 0; i + 1 < walk.size(); ++i) {
-                if (changes.edges_removed.count({walk[i], walk[i + 1]})) {
-                    walk.resize(i + 1);  // Truncate at the edge
+                const bool deleted_node = changes.nodes_removed.count(walk[i + 1]) > 0;
+                const bool deleted_edge = changes.edges_removed.count({walk[i], walk[i + 1]}) > 0;
+                if (deleted_node || deleted_edge) {
+                    truncate_at = i + 1;
                     break;
                 }
             }
-        }
-    }
+            if (truncate_at == original_length)
+                continue;
 
-    // Extend truncated walks until the next restart check fires.
-    for (auto& [node, walks] : precomputed_walks) {
-        for (auto& walk : walks) {
-            while (stop_dis(rng) >= epsilon) {
+            walk.resize(truncate_at);
+            while (walk.size() < original_length) {
                 int last = walk.back();
                 int next = 0;
                 if (!try_sample_weighted_successor(weighted_transitions, last, rng, next))
@@ -375,12 +435,10 @@ RandomWalkResult update_random_walks_directed_with_weights(
         }
     }
 
-    result.precomputed_walks = precomputed_walks;
-    return result;
 }
 
 
-RandomWalkResult update_random_walks_directed_with_weights(
+void update_random_walks_directed_with_weights(
     const Graph_& graph,
     std::unordered_map<int, std::vector<std::vector<int>>>& precomputed_walks,
     const GraphChanges& changes,
@@ -388,7 +446,7 @@ RandomWalkResult update_random_walks_directed_with_weights(
     double epsilon
 ) {
     WeightedTransitionLookup weighted_transitions = build_weighted_transition_lookup(graph);
-    return update_random_walks_directed_with_weights(
+    update_random_walks_directed_with_weights(
         weighted_transitions,
         precomputed_walks,
         changes,
@@ -405,8 +463,7 @@ vector<int> compute_personalized_pagerank(int w, int L, double epsilon,
                                           const DirectedGraph &directed_graph) {
     vector<int> walk;
     int current = w;
-    random_device rd;
-    mt19937 gen(rd());
+    auto& gen = sankofa_random_engine();
     uniform_real_distribution<> dis(0.0, 1.0);
     unordered_map<int, vector<int>> remaining_segment_indices;
 
@@ -564,96 +621,58 @@ TopKResult calculate_top_k_cumulative_with_weights(
 
 
 
-//    # Step B: π(u,v) approximated by cumulative counts normalized
+    // The local PPR distribution is the normalized, decayed visit count.
+    // c is used to choose the PPR walk length, not to discard visited nodes.
+    (void)c;
     std::unordered_map<int, double> pi_u;
     double total_cumulative = 0.0;
     for (const auto& [_, value] : cumulative_counts) total_cumulative += value;
     for (const auto& [node, value] : cumulative_counts) {
-        pi_u[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
+        if (!is_dummy_node(node))
+            pi_u[node] = (total_cumulative > 0) ? (value / total_cumulative) : 0.0;
     }
 
+    // Sankofa's local rank combines query PPR and global PageRank. epsilon is
+    // the restart probability (1 - beta), so it weights the local PPR term.
+    std::unordered_map<int, double> sankofa_rank;
+    for (const auto& [node, ppr_score] : pi_u) {
+        const auto global_it = pi_v.find(node);
+        const double global_score = global_it == pi_v.end() ? 0.0 : global_it->second;
+        sankofa_rank[node] = epsilon * ppr_score + (1.0 - epsilon) * global_score;
+    }
 
-
-    std::unordered_map<int, double> pi_uv_raw;
-    std::unordered_map<int, double> pi_uv_norm;
-
-    // 1. FILTER FIRST — keep only nodes with raw count >= c
-    for (const auto& [node, value] : cumulative_counts) {
-        if (value >= c) {
-            pi_uv_raw[node] = value;  // store raw filtered count
+    // Algorithm 2 chooses Top-k from the decayed query-PPR visit counts.
+    // The blended Sankofa rank is retained as each selected node's score.
+    std::vector<std::pair<int, double>> ranked_local_nodes;
+    ranked_local_nodes.reserve(pi_u.size());
+    for (const auto& [node, score] : pi_u)
+        ranked_local_nodes.emplace_back(node, score);
+    std::sort(ranked_local_nodes.begin(), ranked_local_nodes.end(),
+        [](const auto& left, const auto& right) {
+            if (left.second != right.second)
+                return left.second > right.second;
+            return left.first < right.first;
         }
-    }
+    );
 
-    // 2. COMPUTE NORMALIZATION CONSTANT *only over filtered nodes*
-    double total_filtered = 0.0;
-    for (const auto& [node, value] : pi_uv_raw) {
-        total_filtered += value;
-    }
-
-    // 3. NORMALIZE
-    for (const auto& [node, value] : pi_uv_raw) {
-        pi_uv_norm[node] = (total_filtered > 0) ? (value / total_filtered) : 0.0;
-    }
-
-    
-    //double fallback = 0;  // negligible, avoids exact zero
-    std::vector<std::pair<int, double>> weighted_scores;
-    std::vector<std::pair<int, double>> weighted_scores_others;
-    for (const auto& [node, val] : cumulative_counts) {
-
-  
-        double puv = pi_uv_norm[node];     // ppr weight
-        double pv = pi_v[node];       // global weight
-
-
-        double alpha = epsilon;
-        //double weight = (1.0 - alpha) * puv + alpha * pv;
-        double weight = (alpha) * puv + (1.0-alpha) * pv;
-        
-        
-        //double weight = pi_uv_norm[node] ;
-
-        weighted_scores.emplace_back(node, weight);
-        
-
-
-    }
-    for (const auto& [node, _] : pi_v) {
-        double pu = (pi_u.find(node) != pi_u.end()) ? pi_u.at(node) : 0.0;
-
-        double pv = pi_v[node];       // global popularity
-
-        double alpha = epsilon;
-        double weight_others = (alpha) * pu + (1.0-alpha) * pv;
-        //double weight_others = pu;
-        weighted_scores_others.emplace_back(node, weight_others);
-
-  
-} 
-
-    // 5. Select top-k nodes
     std::unordered_map<int, double> top_k;
     std::unordered_map<int, double> nontop_k;
-    std::unordered_set<int> selected;
-
-    for (int i = 0; i < static_cast<int>(weighted_scores.size()); //&& top_k.size() < static_cast<size_t>(k)
-     ++i) {
-        int node = weighted_scores[i].first;
-
-        // Skip if node ID starts with "12345"
-        if (std::to_string(node).rfind("12345", 0) == 0) continue;
-
-        top_k[node] = weighted_scores[i].second;
-        selected.insert(node);
+    const size_t top_k_count = std::min(
+        static_cast<size_t>(std::max(k, 0)), ranked_local_nodes.size()
+    );
+    for (size_t index = 0; index < top_k_count; ++index) {
+        const int node = ranked_local_nodes[index].first;
+        top_k[node] = sankofa_rank[node];
     }
 
-
-    for (int i = 0; i < static_cast<int>(weighted_scores_others.size()); //&& top_k.size() < static_cast<size_t>(k)
-     ++i) {
-        int node = weighted_scores_others[i].first;
-
-
-        nontop_k[node] = weighted_scores_others[i].second;
+    // Scores for all non-top-k entities support boundary and fallback
+    // selection. Entities outside the PPR walk have a zero local component.
+    for (const auto& [node, global_score] : pi_v) {
+        if (is_dummy_node(node) || top_k.find(node) != top_k.end())
+            continue;
+        const auto local_it = pi_u.find(node);
+        const double ppr_score = local_it == pi_u.end() ? 0.0 : local_it->second;
+        nontop_k[node] = epsilon * ppr_score + (1.0 - epsilon) * global_score;
     }
 
 
@@ -692,14 +711,23 @@ TopKSummaryWithWeights generate_top_k_summary(
     for (int t = 0; t < static_cast<int>(dynamic_graph.size()); t++) {
         auto total_start = chrono::high_resolution_clock::now();
         auto graph_changes_result = graph_changes_with_dummy_node(dynamic_graph, queries, t);
-        summary.changes_over_time[t] = graph_changes_result.changes;
+        GraphChanges incoming_changes;
+        if (t > 0) {
+            incoming_changes = graph_changes_with_dummy_node(
+                dynamic_graph, queries, t - 1
+            ).changes;
+        }
+        summary.changes_over_time[t] = incoming_changes;
 
         // Count all nodes in the snapshot
         unordered_set<int> nodes_set;
         for (const auto& p : graph_changes_result.snapshot) {
-            nodes_set.insert(p.first);
-            for (const auto& q : p.second)
-                nodes_set.insert(q.first);
+            if (!is_dummy_node(p.first))
+                nodes_set.insert(p.first);
+            for (const auto& q : p.second) {
+                if (!is_dummy_node(q.first))
+                    nodes_set.insert(q.first);
+            }
         }
         int n = nodes_set.size();
         int L = calculate_required_walk_length(c, epsilon, k, n);
@@ -709,18 +737,20 @@ TopKSummaryWithWeights generate_top_k_summary(
         const Graph_& weighted_graph = graph_changes_result.snapshot;
 
         auto start = chrono::high_resolution_clock::now();
-        RandomWalkResult R;
         if (t == 0) {
-    
-            R = generate_random_walks_directed_weighted(weighted_graph, num_walks, epsilon);
-            summary.random_walks[0] = R;
-
-
+            summary.random_walks[0] = generate_random_walks_directed_weighted(
+                weighted_graph, num_walks, epsilon
+            );
         } else {
-
-            R = update_random_walks_directed_with_weights(weighted_graph, summary.random_walks[0].precomputed_walks, summary.changes_over_time[t], num_walks, epsilon);
-            summary.random_walks[0] = R;
+            update_random_walks_directed_with_weights(
+                weighted_graph,
+                summary.random_walks[0].precomputed_walks,
+                summary.changes_over_time[t],
+                num_walks,
+                epsilon
+            );
         }
+        const auto& walk_bank = summary.random_walks[0].precomputed_walks;
         auto end = chrono::high_resolution_clock::now();
 
 
@@ -737,15 +767,22 @@ TopKSummaryWithWeights generate_top_k_summary(
 
 
   
-        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, R.precomputed_walks, directed_graph);
+        vector<int> walk = compute_personalized_pagerank(graph_changes_result.dummy_node, L, epsilon, walk_bank, directed_graph);
 
         summary.ppr_walks[t] = walk;
         auto time_start = chrono::high_resolution_clock::now();
 
-        auto pr3 = MCWalks::MC_CompletePath_FromWalks(R.precomputed_walks);
+        auto pr3 = MCWalks::MC_CompletePath_FromWalks(walk_bank);
+
+        std::vector<int> entity_walk;
+        entity_walk.reserve(walk.size());
+        for (int node : walk) {
+            if (node != graph_changes_result.dummy_node && !is_dummy_node(node))
+                entity_walk.push_back(node);
+        }
 
         // Calculate top-k cumulative wi
-        auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
+        auto top_k_result = calculate_top_k_cumulative_with_weights(entity_walk, cumCounts, k, t, counters, pr3, decay_rate, window_size, n, c, epsilon);
     
         summary.top_k_cumsum_walks[t] = top_k_result.top_k;
         summary.global_pr[t] = top_k_result.nontop_k;
@@ -964,6 +1001,7 @@ void apply_raw_graph_delta(
 
 
 void reset_stream_state() {
+    reseed_sankofa_random_engine();
     summary = TopKSummary{};
     weights.clear();
     runtime_per_timestep.clear();
@@ -978,13 +1016,34 @@ void reset_stream_state() {
 }
 
 
-void initialize_stream_graph(const Graph_& initial_graph) {
+void initialize_stream_graph(
+    const Graph_& initial_graph,
+    int num_walks = 20,
+    double epsilon = 0.9
+) {
     reset_stream_state();
     streamed_graph = scaled_graph_copy(initial_graph);
     streamed_directed_graph = build_directed_graph(streamed_graph);
     streamed_weighted_transitions = build_weighted_transition_lookup(streamed_graph);
-    streamed_node_count = static_cast<int>(streamed_graph.size());
+    std::unordered_set<int> entities;
+    for (const auto& [source, neighbors] : streamed_graph) {
+        if (!is_dummy_node(source))
+            entities.insert(source);
+        for (const auto& [target, _weight] : neighbors) {
+            if (!is_dummy_node(target))
+                entities.insert(target);
+        }
+    }
+    streamed_node_count = static_cast<int>(entities.size());
     streamed_graph_initialized = true;
+
+    // Algorithm 2's first timestep creates R segments for every entity.
+    summary.random_walks[0] = generate_random_walks_directed_weighted(
+        streamed_graph,
+        streamed_weighted_transitions,
+        num_walks,
+        epsilon
+    );
 }
 
 
@@ -1001,7 +1060,8 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
     int window_size,
     const DirectedGraph* directed_graph_override = nullptr,
     const WeightedTransitionLookup* weighted_transitions_override = nullptr,
-    int node_count_override = -1
+    int node_count_override = -1,
+    bool walk_bank_prepared = false
 ) {
     auto total_start = chrono::high_resolution_clock::now();
     summary.changes_over_time[t] = changes;
@@ -1019,7 +1079,8 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
     int L = calculate_required_walk_length(c, epsilon, k, n);
 
     auto start = chrono::high_resolution_clock::now();
-    RandomWalkResult R;
+    RandomWalkResult generated_walks;
+    const std::unordered_map<int, std::vector<std::vector<int>>>* walk_bank = nullptr;
     WeightedTransitionLookup weighted_transitions_storage;
     const WeightedTransitionLookup* weighted_transitions = weighted_transitions_override;
     if (weighted_transitions == nullptr) {
@@ -1027,25 +1088,34 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
         weighted_transitions = &weighted_transitions_storage;
     }
 
-    if (false){//(t%20 == 0) {
-        R = generate_random_walks_directed_weighted(
+    if (walk_bank_prepared) {
+        const auto bank_it = summary.random_walks.find(0);
+        if (bank_it == summary.random_walks.end())
+            throw runtime_error("Sankofa walk bank was not prepared for this timestep.");
+        walk_bank = &bank_it->second.precomputed_walks;
+    } else if (t == 0) {
+        generated_walks = generate_random_walks_directed_weighted(
             weighted_graph,
             *weighted_transitions,
             num_walks,
             epsilon
         );
-        summary.random_walks[0] = R;
+        summary.random_walks[0] = std::move(generated_walks);
         cumCounts.clear();
         counters.clear();
+        walk_bank = &summary.random_walks[0].precomputed_walks;
     } else {
-        R = update_random_walks_directed_with_weights(
+        auto bank_it = summary.random_walks.find(0);
+        if (bank_it == summary.random_walks.end())
+            throw runtime_error("Sankofa walk bank is missing before a graph update.");
+        update_random_walks_directed_with_weights(
             *weighted_transitions,
-            summary.random_walks[0].precomputed_walks,
+            bank_it->second.precomputed_walks,
             summary.changes_over_time[t],
             num_walks,
             epsilon
         );
-        summary.random_walks[0] = R;
+        walk_bank = &bank_it->second.precomputed_walks;
     }
     auto end = chrono::high_resolution_clock::now();
 
@@ -1058,14 +1128,23 @@ TopKSummaryWithWeights process_one_timestep_from_graph_changes(
         directed_graph = &directed_graph_storage;
     }
 
-    vector<int> walk = compute_personalized_pagerank(dummy_node, L, epsilon, R.precomputed_walks, *directed_graph);
+    vector<int> walk = compute_personalized_pagerank(dummy_node, L, epsilon, *walk_bank, *directed_graph);
 
     summary.ppr_walks[t] = walk;
     auto time_start = chrono::high_resolution_clock::now();
 
-    auto pr3 = MCWalks::MC_CompletePath_FromWalks(R.precomputed_walks);
+    auto pr3 = MCWalks::MC_CompletePath_FromWalks(*walk_bank);
 
-    auto top_k_result = calculate_top_k_cumulative_with_weights(walk, cumCounts, k, t, counters,  pr3, decay_rate, window_size, n,c, epsilon);
+    // PPR restarts revisit the temporary dummy node. It directs the walk but
+    // is not an entity and must not affect entity visit frequencies or Top-k.
+    std::vector<int> entity_walk;
+    entity_walk.reserve(walk.size());
+    for (int node : walk) {
+        if (node != dummy_node && !is_dummy_node(node))
+            entity_walk.push_back(node);
+    }
+
+    auto top_k_result = calculate_top_k_cumulative_with_weights(entity_walk, cumCounts, k, t, counters, pr3, decay_rate, window_size, n, c, epsilon);
 
     summary.top_k_cumsum_walks[t] = top_k_result.top_k;
     summary.global_pr[t] = top_k_result.nontop_k;
@@ -1132,19 +1211,49 @@ TopKSummaryWithWeights process_one_timestep_delta(
     if (!streamed_graph_initialized) {
         throw runtime_error("Sankofa streamed graph is not initialized.");
     }
+    (void)has_next;  // Deltas are incoming; the caller applies one at t > 0.
+
+    GraphChanges changes;
+    if (t == 0) {
+        if (!raw_delta.nodes_added.empty() || !raw_delta.nodes_removed.empty() ||
+            !raw_delta.edges_added.empty() || !raw_delta.edges_removed.empty()) {
+            throw invalid_argument("Timestep 0 must start from the initial graph, without an incoming delta.");
+        }
+        if (summary.random_walks.find(0) == summary.random_walks.end())
+            throw runtime_error("Initial per-entity walk bank was not created.");
+    } else {
+        // Apply the incoming G_(t-1)->G_t changes first. Walk repairs then
+        // sample transitions from G_t, and this timestep's PPR walk also runs
+        // on G_t.
+        changes.nodes_added.insert(raw_delta.nodes_added.begin(), raw_delta.nodes_added.end());
+        changes.nodes_removed.insert(raw_delta.nodes_removed.begin(), raw_delta.nodes_removed.end());
+        changes.edges_added.insert(raw_delta.edges_added.begin(), raw_delta.edges_added.end());
+        changes.edges_removed.insert(raw_delta.edges_removed.begin(), raw_delta.edges_removed.end());
+
+        apply_raw_graph_delta(streamed_graph, raw_delta);
+        apply_raw_graph_delta(streamed_directed_graph, raw_delta);
+        apply_raw_graph_delta(streamed_weighted_transitions, streamed_graph, raw_delta);
+        streamed_node_count += static_cast<int>(raw_delta.nodes_added.size());
+        streamed_node_count -= static_cast<int>(raw_delta.nodes_removed.size());
+
+        auto bank_it = summary.random_walks.find(0);
+        if (bank_it == summary.random_walks.end())
+            throw runtime_error("Sankofa walk bank is missing before a graph update.");
+        update_random_walks_directed_with_weights(
+            streamed_weighted_transitions,
+            bank_it->second.precomputed_walks,
+            changes,
+            num_walks,
+            epsilon
+        );
+    }
+    summary.changes_over_time[t] = changes;
 
     int dummy_node = dummy_node_for_timestep(t);
     vector<int> query_nodes = extract_query_nodes(queries.at(t));
     add_dummy_node(streamed_graph, query_nodes, dummy_node);
     streamed_directed_graph[dummy_node] = query_nodes;
     refresh_weighted_transitions_for_node(streamed_weighted_transitions, streamed_graph, dummy_node);
-
-    auto changes = graph_changes_with_dummy_node_streamed(
-        raw_delta,
-        queries,
-        t,
-        has_next
-    );
 
     auto result = process_one_timestep_from_graph_changes(
         num_walks,
@@ -1159,21 +1268,14 @@ TopKSummaryWithWeights process_one_timestep_delta(
         window_size,
         &streamed_directed_graph,
         &streamed_weighted_transitions,
-        streamed_node_count + 1
+        streamed_node_count,
+        true
     );
 
     remove_dummy_node(streamed_graph, dummy_node);
     streamed_directed_graph.erase(dummy_node);
     streamed_weighted_transitions.neighbors.erase(dummy_node);
     streamed_weighted_transitions.weights.erase(dummy_node);
-
-    if (has_next) {
-        apply_raw_graph_delta(streamed_graph, raw_delta);
-        apply_raw_graph_delta(streamed_directed_graph, raw_delta);
-        apply_raw_graph_delta(streamed_weighted_transitions, streamed_graph, raw_delta);
-        streamed_node_count += static_cast<int>(raw_delta.nodes_added.size());
-        streamed_node_count -= static_cast<int>(raw_delta.nodes_removed.size());
-    }
 
     return result;
 }
@@ -1428,6 +1530,8 @@ PYBIND11_MODULE(sankofa, m) {
     m.def("initialize_stream_graph",
         &initialize_stream_graph,
         py::arg("initial_graph"),
+        py::arg("num_walks") = 20,
+        py::arg("epsilon") = 0.9,
         "Initialize the Sankofa streaming graph.");
 
     m.def("process_one_timestep",

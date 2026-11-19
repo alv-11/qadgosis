@@ -1,12 +1,14 @@
 
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 import src.core.sankofa as walks
 from src.progress import format_seconds, progress, progress_write
@@ -70,7 +72,7 @@ def build_changes_dataframe(changes_over_time, queries_):
     # }
 
     seeds_per_timestep = {
-    int(t): {int(x) for x in nodes if x is not None}
+    int(t): {str(x) for x in nodes if x is not None}
     for t, nodes in queries_.items()
     }
 
@@ -83,10 +85,10 @@ def build_changes_dataframe(changes_over_time, queries_):
         seeds = seeds_t.union(seeds_next)
         #seeds = seeds_per_timestep.get(t, set())
 
-        nodes_added = changes.get("nodes_added", [])
-        nodes_removed = changes.get("nodes_removed", [])
-        edges_added = changes.get("edges_added", [])
-        edges_removed = changes.get("edges_removed", [])
+        nodes_added = [str(node) for node in changes.get("nodes_added", [])]
+        nodes_removed = [str(node) for node in changes.get("nodes_removed", [])]
+        edges_added = [(str(source), str(target)) for source, target in changes.get("edges_added", [])]
+        edges_removed = [(str(source), str(target)) for source, target in changes.get("edges_removed", [])]
 
         # ------------------------------
         # Overlap computations
@@ -178,6 +180,10 @@ def build_changes_dataframe(changes_over_time, queries_):
 
 def main():
     run_dir.mkdir(parents=True, exist_ok=True)
+    random_seed = os.environ.get("QADGOSIS_RANDOM_SEED")
+    if random_seed not in (None, ""):
+        random.seed(int(random_seed))
+        np.random.seed(int(random_seed))
     started_at = utc_now_iso()
     subgraph_dir = resolve_subgraph_dir()
     runtime_settings = resolve_main_runtime_settings()
@@ -196,9 +202,24 @@ def main():
         raise ValueError("Sankofa cache snapshot order does not match query preparation order.")
     progress_write(f"Sankofa cache ready at {cache.cache_dir}.")
 
+    internal_to_entity = {
+        internal_id: entity
+        for entity, internal_id in cache.entity_to_internal.items()
+    }
+
+    def names_for_internal_scores(scores):
+        return {
+            internal_to_entity[int(node)]: score
+            for node, score in scores.items()
+            if int(node) in internal_to_entity
+        }
+
     progress_write("Encoding query seeds for C++ streaming...")
     converted_queries = {
-        int(timestep): {int(i): int(query) for i, query in enumerate(query_list)}
+        int(timestep): {
+            int(i): cache.entity_to_internal[str(query)]
+            for i, query in enumerate(query_list)
+        }
         for timestep, query_list in queries_.items()
     }
     # Ensure every timestep is present (C++ expects all keys 0..N-1)
@@ -229,8 +250,11 @@ def main():
     progress_write(f"Summary triple size: {summary_size}")
 
     progress_write("Initializing C++ Sankofa stream state...")
-    walks.reset_stream_state()
-    walks.initialize_stream_graph(initial_graph)
+    walks.initialize_stream_graph(
+        initial_graph,
+        runtime_settings["num_walks"],
+        runtime_settings["epsilon"],
+    )
     progress_write("C++ Sankofa stream state initialized.")
 
     sankofa_rows = []
@@ -257,6 +281,9 @@ def main():
         methods=baseline_methods,
         apex_graph=apex_graph,
     )
+    # Keep both representations: the C++ walk engine needs entity-ID graph
+    # deltas, while Python evaluation/baselines need labeled triple deltas.
+    incoming_graph_delta = None
     incoming_triple_delta = None
 
     progress_write("Streaming snapshots into C++ and evaluating each timestep...")
@@ -278,7 +305,9 @@ def main():
 
         results = walks.process_one_timestep_delta(
             num_walks=runtime_settings["num_walks"],
-            raw_delta=load_delta(cache, t) if has_next else None,
+            # The C++ stream is currently at G_t. Pass the incoming delta
+            # G_(t-1)->G_t; the next delta is applied at the next iteration.
+            raw_delta=incoming_graph_delta,
             queries=converted_queries,
             c=runtime_settings["c"],
             epsilon=runtime_settings["epsilon"],
@@ -289,7 +318,9 @@ def main():
             window_size=runtime_settings["window_size"]
         )
         step_runtime = results.get("runtime_per_timestep", {}).get(t)
-        top_k_nodes = results.get("top_k_cumsum_walks", {}).get(t, {})
+        top_k_nodes = names_for_internal_scores(
+            results.get("top_k_cumsum_walks", {}).get(t, {})
+        )
         top_k_count = len(top_k_nodes)
 
         progress_write(
@@ -306,6 +337,7 @@ def main():
             rdf_node_ids, rdf_vectors = build_rdf2vec_embeddings(
                 rdf_graph,
                 timestep_query_nodes,
+                workers=1,
             )
             node_embeddings = embedding_lookup(rdf_node_ids, rdf_vectors)
             embedding_runtime = time.perf_counter() - embedding_started
@@ -320,7 +352,9 @@ def main():
             top_k_nodes,
             test_data,
             weights=compute_eval_weights(t, sorted(test_data.keys()), runtime_settings["eval_decay_rate"]),
-            global_pr=results.get("global_pr", {}).get(t, {}),
+            global_pr=names_for_internal_scores(
+                results.get("global_pr", {}).get(t, {})
+            ),
             max_triples=summary_size,
             walk_runtime=step_runtime,
             query_nodes=timestep_query_nodes,
@@ -350,6 +384,7 @@ def main():
 
         if has_next:
             evaluation_delta_started = time.perf_counter()
+            outgoing_graph_delta = load_delta(cache, t)
             outgoing_triple_delta = load_triple_delta(cache, t)
             removed_count = len(outgoing_triple_delta.get("triples_removed", []))
             added_count = len(outgoing_triple_delta.get("triples_added", []))
@@ -360,6 +395,7 @@ def main():
                 f"triples={evaluation_graph.number_of_triples():,} "
                 f"dt={format_seconds(time.perf_counter() - evaluation_delta_started)}"
             )
+            incoming_graph_delta = outgoing_graph_delta
             incoming_triple_delta = outgoing_triple_delta
 
         stream_steps.set_postfix(
@@ -383,7 +419,33 @@ def main():
     runtime_per_timestep = results["runtime_per_timestep"]
     #print("Walk runtimes per timestep:", runtime_per_timestep)
     non_topk_global_pr = results["global_pr"]
-    changes_in_topk = results["changes_over_time"]
+    changes_in_topk = {
+        int(timestep): {
+            "nodes_added": [
+                internal_to_entity.get(int(node), f"__sankofa_dummy_{node}")
+                for node in changes.get("nodes_added", [])
+            ],
+            "nodes_removed": [
+                internal_to_entity.get(int(node), f"__sankofa_dummy_{node}")
+                for node in changes.get("nodes_removed", [])
+            ],
+            "edges_added": [
+                (
+                    internal_to_entity.get(int(source), f"__sankofa_dummy_{source}"),
+                    internal_to_entity.get(int(target), f"__sankofa_dummy_{target}"),
+                )
+                for source, target in changes.get("edges_added", [])
+            ],
+            "edges_removed": [
+                (
+                    internal_to_entity.get(int(source), f"__sankofa_dummy_{source}"),
+                    internal_to_entity.get(int(target), f"__sankofa_dummy_{target}"),
+                )
+                for source, target in changes.get("edges_removed", [])
+            ],
+        }
+        for timestep, changes in results["changes_over_time"].items()
+    }
 
 
     with output_path("queries.json").open("w", encoding="utf-8") as f:
@@ -430,6 +492,7 @@ def main():
             "run_dir": str(run_dir),
             "subgraph_dir": str(subgraph_dir),
             "query_bundle_index": query_bundle_index,
+            "random_seed": random_seed,
             "snapshot_count": total_timesteps,
             "initial_node_count": initial_node_count,
             "initial_edge_count": initial_edge_count,
@@ -445,6 +508,7 @@ def main():
                 "baseline_methods": baseline_methods,
                 "use_rdf2vec": runtime_settings["use_rdf2vec"],
                 "rdf2vec_embedding_weight": runtime_settings["rdf2vec_embedding_weight"],
+                "rdf2vec_workers": 1,
             },
             "query_generation_settings": query_generation_settings,
             "outputs": {

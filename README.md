@@ -20,6 +20,36 @@ The walks component of Algorithm 2 of SANKOFA is implemented in C++ using pybind
 
 `python setup.py install`
 
+### Per-snapshot random-walk behavior
+
+The streaming run builds the initial walk-segment bank from every entity in
+snapshot 0, with `QADGOSIS_NUM_WALKS` segments per entity (20 by default). For
+each later snapshot it applies the incoming graph delta first, then removes
+segments for deleted entities, repairs segments that cross deleted edges, and
+creates segments for newly added entities. Repairs use the updated snapshot,
+so newly added edges can be taken while a damaged segment is regenerated.
+
+For each timestep, the current query seed entities are temporarily connected to
+a dummy node. SANKOFA runs its PPR BigWalk from that node, removes the dummy
+from entity ranking, and uses decayed visit counts to select the top-k entities.
+The walk bank contains graph entities only; the query dummy is never retained
+between timesteps.
+
+In this code, `epsilon` is the restart/teleport probability, so it is the
+complement of the paper's damping parameter: `epsilon = 1 - beta`. The default
+`epsilon=0.90` therefore means `beta=0.10`, the practical setting recommended
+in the paper's damping-factor analysis. Walk-segment lengths are sampled using
+the geometric stopping rule described by the algorithm. The paper also reports
+a separate experimental setup with `beta=0.9` and walk length 5, which is not
+the same parameterization as that practical setting.
+
+The current implementation recalculates the global visit distribution from
+the walk bank at each timestep instead of maintaining its counters
+incrementally as the paper pseudocode describes. This produces the same global
+distribution for the current bank, with extra computation. Enabling RDF2Vec
+does not change these SANKOFA walks or PPR rankings; it adds the separate
+embedding-based scoring used during boundary and fallback triple selection.
+
 
 ## Running the code
 
@@ -211,3 +241,66 @@ cd kg_summarization
 # edit main.py and set: subgraph_dir = "data/test_6snap"
 python3 simulate.py
 ```
+
+## NELL Snapshot Experiment
+
+`kg_summarization/generate_nell_synthetic_snapshots.py` turns a three-column
+NELL fact file into three snapshots while retaining the original entity names
+and predicates in the snapshot files. By default it reads
+`~/Downloads/nell/nell.txt` and writes to
+`kg_summarization/data/nell_named_synthetic_3snap/`. The additions and removals
+are sampled randomly from the static input; they are synthetic test changes,
+not NELL's historical evolution. A manifest records the input hash and change
+counts. No numeric IDs are written into the NELL snapshot files. At runtime,
+the cache creates a reversible integer index only at the boundary to the
+existing C++ walk engine, whose graph interface accepts integers; graph
+queries, embeddings, and evaluation retain the original NELL names. The script
+refuses to overwrite a non-empty output folder.
+
+From `kg_summarization/`, generate snapshots with:
+
+```bash
+../.venv/bin/python generate_nell_synthetic_snapshots.py
+```
+
+Run SANKOFA without RDF2Vec, then with embedding-only ranking, using the same
+saved query bundle and graph. This uses 3,000 queries per snapshot across 50
+topics, leaving 600 held-out queries per snapshot:
+
+```bash
+QADGOSIS_SUBGRAPH_DIR="$PWD/data/nell_named_synthetic_3snap" \
+PYTHONHASHSEED=42 \
+QADGOSIS_RANDOM_SEED=42 \
+QADGOSIS_NUM_WALKS=20 \
+QADGOSIS_BUDGET_RATIO=0.05 \
+QADGOSIS_QUERY_NUM_QUERIES=3000 \
+QADGOSIS_QUERY_TOPIC_COUNT=50 \
+QADGOSIS_QUERY_RANDOM_QUERY_PROB=0 \
+QADGOSIS_QUERY_SHUFFLE=1 \
+QADGOSIS_QUERY_HARD=1 \
+QADGOSIS_QUERY_MIN_SHIFT_HOPS=1 \
+QADGOSIS_QUERY_MIN_CHAIN_LEN=1 \
+QADGOSIS_QUERY_MAX_CHAIN_LEN=1 \
+QADGOSIS_USE_RDF2VEC=0 \
+../.venv/bin/python main.py experiments/nell_named_synthetic_3snap/baseline_5pct_3000q
+
+QADGOSIS_SUBGRAPH_DIR="$PWD/data/nell_named_synthetic_3snap" \
+PYTHONHASHSEED=42 \
+QADGOSIS_RANDOM_SEED=42 \
+QADGOSIS_NUM_WALKS=20 \
+QADGOSIS_BUDGET_RATIO=0.05 \
+QADGOSIS_QUERY_NUM_QUERIES=3000 \
+QADGOSIS_QUERY_TOPIC_COUNT=50 \
+QADGOSIS_QUERY_RANDOM_QUERY_PROB=0 \
+QADGOSIS_QUERY_SHUFFLE=1 \
+QADGOSIS_QUERY_HARD=1 \
+QADGOSIS_QUERY_MIN_SHIFT_HOPS=1 \
+QADGOSIS_QUERY_MIN_CHAIN_LEN=1 \
+QADGOSIS_QUERY_MAX_CHAIN_LEN=1 \
+QADGOSIS_USE_RDF2VEC=1 \
+QADGOSIS_RDF2VEC_WEIGHT=1 \
+../.venv/bin/python main.py experiments/nell_named_synthetic_3snap/embeddings_5pct_3000q
+```
+
+The experiment outputs and measured results from the current run are described
+in [`kg_summarization/experiments/nell_named_synthetic_3snap/README.md`](kg_summarization/experiments/nell_named_synthetic_3snap/README.md).

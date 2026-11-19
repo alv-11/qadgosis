@@ -17,11 +17,12 @@ from src.progress import format_bytes, format_seconds, progress, progress_write
 
 
 EDGE_WEIGHT = 0.01
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 CACHE_DIR_NAME = ".sankofa_cache"
 CACHE_LOCK_FILE_NAME = ".sankofa_cache.lock"
 MANIFEST_FILE = "manifest.json"
 INITIAL_GRAPH_FILE = "initial_graph.pkl"
+ENTITY_ID_MAP_FILE = "entity_id_map.pkl"
 DELTAS_DIR_NAME = "deltas"
 TRIPLE_DELTAS_DIR_NAME = "triple_deltas"
 SNAPSHOT_TRIPLES_DIR_NAME = "snapshot_triples"
@@ -43,6 +44,7 @@ class SankofaDeltaCache:
     snapshot_files: tuple[str, ...]
     manifest: dict[str, object]
     cache_status: str
+    entity_to_internal: dict[str, int]
 
     @property
     def initial_graph_path(self) -> Path:
@@ -95,7 +97,9 @@ def graph_edge_count(graph: Graph) -> int:
 
 
 def parse_snapshot_graph(snapshot_path: str | Path) -> Graph:
-    return _graph_from_snapshot_triples(parse_snapshot_triples(snapshot_path), snapshot_path)
+    snapshot_triples = parse_snapshot_triples(snapshot_path)
+    entity_to_internal = _build_entity_id_map_from_triples(snapshot_triples)
+    return _graph_from_snapshot_triples(snapshot_triples, snapshot_path, entity_to_internal)
 
 
 def parse_snapshot_triples(snapshot_path: str | Path) -> SnapshotTriples:
@@ -143,6 +147,7 @@ def ensure_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fals
             snapshot_files=tuple(snapshot_files),
             manifest=manifest,
             cache_status=REUSED_CACHE_STATUS,
+            entity_to_internal=_load_entity_id_map(cache_dir),
         )
 
 
@@ -287,7 +292,7 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
     snapshot_paths = [cache.subgraph_dir / file_name for file_name in cache.snapshot_files]
 
     reconstructed = load_initial_graph(cache)
-    expected = parse_snapshot_graph(snapshot_paths[0])
+    expected = parse_snapshot_graph_with_map(snapshot_paths[0], cache.entity_to_internal)
     if reconstructed != expected:
         raise ValueError("Cached initial Sankofa graph does not match snapshot_0.")
 
@@ -302,7 +307,7 @@ def validate_sankofa_delta_cache(subgraph_dir: str | Path, *, rebuild: bool = Fa
     for timestep in validation_steps:
         started = time.perf_counter()
         reconstructed = apply_delta_to_graph(reconstructed, load_delta(cache, timestep))
-        expected = parse_snapshot_graph(snapshot_paths[timestep + 1])
+        expected = parse_snapshot_graph_with_map(snapshot_paths[timestep + 1], cache.entity_to_internal)
 
         if reconstructed != expected:
             raise ValueError(
@@ -370,10 +375,16 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
     triple_deltas_dir.mkdir(parents=True, exist_ok=True)
     snapshot_triples_dir.mkdir(parents=True, exist_ok=True)
 
+    progress_write("Sankofa cache: indexing named entities for its integer-only C++ walk engine...")
+    entity_to_internal = _build_entity_id_map(snapshot_paths)
+    entity_id_map_path = cache_dir / ENTITY_ID_MAP_FILE
+    with entity_id_map_path.open("wb") as handle:
+        pickle.dump(entity_to_internal, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
     initial_started = time.perf_counter()
     progress_write(f"Sankofa cache: parsing initial snapshot {snapshot_paths[0].name}...")
     current_triples = parse_snapshot_triples(snapshot_paths[0])
-    current_graph = _graph_from_snapshot_triples(current_triples, snapshot_paths[0])
+    current_graph = _graph_from_snapshot_triples(current_triples, snapshot_paths[0], entity_to_internal)
 
     progress_write(
         f"Sankofa cache: initial snapshot {snapshot_paths[0].name} ready "
@@ -390,7 +401,8 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
 
     cache_bytes = (
         (cache_dir / INITIAL_GRAPH_FILE).stat().st_size +
-        initial_snapshot_cache_path.stat().st_size
+        initial_snapshot_cache_path.stat().st_size +
+        entity_id_map_path.stat().st_size
     )
 
     manifest: dict[str, object] = {
@@ -398,6 +410,7 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         "edge_weight": EDGE_WEIGHT,
         "snapshot_files": [_snapshot_metadata(path) for path in snapshot_paths],
         "initial_graph": INITIAL_GRAPH_FILE,
+        "entity_id_map": ENTITY_ID_MAP_FILE,
         "deltas_dir": DELTAS_DIR_NAME,
         "triple_deltas_dir": TRIPLE_DELTAS_DIR_NAME,
         "snapshot_triples_dir": SNAPSHOT_TRIPLES_DIR_NAME,
@@ -422,7 +435,11 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
     for timestep in cache_steps:
         started = time.perf_counter()
         next_triples = parse_snapshot_triples(snapshot_paths[timestep + 1])
-        next_graph = _graph_from_snapshot_triples(next_triples, snapshot_paths[timestep + 1])
+        next_graph = _graph_from_snapshot_triples(
+            next_triples,
+            snapshot_paths[timestep + 1],
+            entity_to_internal,
+        )
         delta = _compute_graph_delta(current_graph, next_graph)
         triple_delta = _compute_triple_delta(current_triples, next_triples)
 
@@ -480,6 +497,7 @@ def _build_sankofa_delta_cache(subgraph_dir: Path, snapshot_files: list[str]) ->
         snapshot_files=tuple(snapshot_files),
         manifest=manifest,
         cache_status=GENERATED_CACHE_STATUS,
+        entity_to_internal=entity_to_internal,
     )
 
 
@@ -496,6 +514,8 @@ def _cache_is_valid(
         return False
 
     if not (cache_dir / INITIAL_GRAPH_FILE).exists():
+        return False
+    if not (cache_dir / ENTITY_ID_MAP_FILE).exists():
         return False
 
     if manifest.get("delta_count") != max(0, len(snapshot_files) - 1):
@@ -595,6 +615,12 @@ def _parse_snapshot_triple(line: str) -> SnapshotTriple | None:
     if len(stripped) < 3:
         return None
 
+    if stripped.startswith("<concept:") and stripped.endswith(" ."):
+        terms = stripped[:-2].split()
+        if len(terms) != 3 or any(not (term.startswith("<") and term.endswith(">")) for term in terms):
+            return None
+        return terms[0][1:-1], terms[1][1:-1], terms[2][1:-1]
+
     fact = (
         stripped[:-2]
         .replace("/", "-")
@@ -618,16 +644,21 @@ def _parse_snapshot_triple(line: str) -> SnapshotTriple | None:
     return source, relation, target
 
 
-def _graph_from_snapshot_triples(snapshot_triples: SnapshotTriples, snapshot_path: str | Path) -> Graph:
+def _graph_from_snapshot_triples(
+    snapshot_triples: SnapshotTriples,
+    snapshot_path: str | Path,
+    entity_to_internal: dict[str, int],
+) -> Graph:
     graph: Graph = {}
 
     for line_number, (source_str, _relation, target_str) in enumerate(snapshot_triples, start=1):
         try:
-            source = int(source_str)
-            target = int(target_str)
-        except ValueError as exc:
+            source = entity_to_internal[source_str]
+            target = entity_to_internal[target_str]
+        except KeyError as exc:
             raise ValueError(
-                f"Snapshot {snapshot_path} contains a non-integer entity near parsed triple {line_number}: {(source_str, target_str)}"
+                f"Snapshot {snapshot_path} contains an entity missing from the shared index "
+                f"near triple {line_number}: {(source_str, target_str)}"
             ) from exc
 
         graph.setdefault(source, {})
@@ -635,6 +666,40 @@ def _graph_from_snapshot_triples(snapshot_triples: SnapshotTriples, snapshot_pat
         graph[source][target] = EDGE_WEIGHT
 
     return graph
+
+
+def _build_entity_id_map(snapshot_paths: list[Path]) -> dict[str, int]:
+    entities = set()
+    for snapshot_path in snapshot_paths:
+        for subject, _predicate, obj in parse_snapshot_triples(snapshot_path):
+            entities.add(subject)
+            entities.add(obj)
+    return _build_entity_id_map_from_entities(entities)
+
+
+def _build_entity_id_map_from_triples(snapshot_triples: SnapshotTriples) -> dict[str, int]:
+    entities = {entity for subject, _predicate, obj in snapshot_triples for entity in (subject, obj)}
+    return _build_entity_id_map_from_entities(entities)
+
+
+def _build_entity_id_map_from_entities(entities: set[str]) -> dict[str, int]:
+    return {entity: index for index, entity in enumerate(sorted(entities), start=1)}
+
+
+def _load_entity_id_map(cache_dir: Path) -> dict[str, int]:
+    with (cache_dir / ENTITY_ID_MAP_FILE).open("rb") as handle:
+        return pickle.load(handle)
+
+
+def parse_snapshot_graph_with_map(
+    snapshot_path: str | Path,
+    entity_to_internal: dict[str, int],
+) -> Graph:
+    return _graph_from_snapshot_triples(
+        parse_snapshot_triples(snapshot_path),
+        snapshot_path,
+        entity_to_internal,
+    )
 
 
 def _snapshot_metadata(snapshot_path: Path) -> dict[str, int | str]:

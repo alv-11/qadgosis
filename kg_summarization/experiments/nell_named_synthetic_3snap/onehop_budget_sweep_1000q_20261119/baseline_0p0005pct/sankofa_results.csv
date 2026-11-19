@@ -1,0 +1,4 @@
+Timestep,Runtime (seconds),Embedding Runtime (seconds),Future Test F1,Future Test Macro F1,Past Unseen Query F1
+0,0.1151597304534912,0.0,0,0.0,
+1,0.12841621498144531,0.0,0,0.0,0.0
+2,0.14095377644348145,0.0,0,0.0,0.0

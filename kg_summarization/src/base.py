@@ -763,12 +763,15 @@ class DBPedia(KnowledgeGraph):
         self.query_dir_ = os.path.join(self.DBPEDIA_DATA_DIR_query, query_dir)
         self.mid_dir_ = os.path.join(self.DBPEDIA_DATA_DIR_query, mid_dir)
         self.numeric_entity_ids_ = self._path_uses_numeric_entity_ids(self.rdf_gz_)
+        self.nell_named_entities_ = False
 
     @staticmethod
     def _path_uses_numeric_entity_ids(path):
         return any(part.lower().startswith('wiki') for part in Path(path).parts)
 
     def is_entity(self, s):
+        if self.nell_named_entities_:
+            return s in self.entities_
         return (s.startswith('<') and s.endswith('>')) or \
             (self.numeric_entity_ids_ and s.isdigit())
 
@@ -820,7 +823,17 @@ class DBPedia(KnowledgeGraph):
     def load(self, head=None, strip=True):
         with gzip.open(self.rdf_gz_, 'rt', encoding = ENCODING) as f:
             for line in f:
-                fact = line.rstrip('\n')[:-2].replace('/', '-').replace('<', '').replace('>', '').replace(':', '').replace('*', '').replace('%', '').split(' ')
+                stripped = line.rstrip('\n')
+                if stripped.startswith('<concept:') and stripped.endswith(' .'):
+                    # NELL labels are meaningful entity identifiers; keep them
+                    # intact for query generation, embeddings, and evaluation.
+                    terms = stripped[:-2].split()
+                    fact = [term[1:-1] for term in terms]
+                    if len(fact) != 3:
+                        raise ValueError(f"Invalid NELL triple in {self.rdf_gz_}: {stripped}")
+                    self.nell_named_entities_ = True
+                else:
+                    fact = stripped[:-2].replace('/', '-').replace('<', '').replace('>', '').replace(':', '').replace('*', '').replace('%', '').split(' ')
                 e1, r = fact[:2]
                 e2 = ' '.join(fact[2:])
 

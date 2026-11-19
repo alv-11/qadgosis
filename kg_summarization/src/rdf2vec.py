@@ -27,9 +27,9 @@ def build_rdf2vec_embeddings(
     non-query nodes sampled as additional walk starts; it is capped at the
     number of available non-query nodes.
 
-    Returns ``(node_ids, vectors)`` where node IDs are int64 and vectors are
-    float32. This follows the supplied project code's node-vector approach;
-    predicates are not tokens in this initial implementation.
+    Returns ``(node_ids, vectors)`` where node IDs retain their graph labels
+    and vectors are float32. Predicates are not tokens in this initial
+    implementation.
     """
     from gensim.models import Word2Vec
 
@@ -53,33 +53,18 @@ def build_rdf2vec_embeddings(
         for neighbours in graph.values():
             graph_node_set.update(neighbours.keys() if isinstance(neighbours, dict) else neighbours)
 
-    # This repository's graph loader and C++ interface use numeric entity IDs.
-    node_by_id = {}
-    for node in graph_node_set:
-        try:
-            node_by_id[int(node)] = node
-        except (TypeError, ValueError):
-            continue
-
-    valid_query_ids = set()
-    for node in q_nodes:
-        try:
-            node_id = int(node)
-        except (TypeError, ValueError):
-            continue
-        if node_id in node_by_id:
-            valid_query_ids.add(node_id)
-
-    remaining_ids = [node_id for node_id in node_by_id if node_id not in valid_query_ids]
-    sample_count = min(max(0, int(sampled_start_nodes)), len(remaining_ids))
-    sampled_ids = rng.sample(remaining_ids, sample_count) if sample_count else []
-    start_ids = list(valid_query_ids) + sampled_ids
-    rng.shuffle(start_ids)
-    start_nodes = [node_by_id[node_id] for node_id in start_ids]
+    node_by_token = {str(node): node for node in graph_node_set}
+    valid_query_tokens = {str(node) for node in q_nodes if str(node) in node_by_token}
+    remaining_tokens = [token for token in node_by_token if token not in valid_query_tokens]
+    sample_count = min(max(0, int(sampled_start_nodes)), len(remaining_tokens))
+    sampled_tokens = rng.sample(remaining_tokens, sample_count) if sample_count else []
+    start_tokens = list(valid_query_tokens) + sampled_tokens
+    rng.shuffle(start_tokens)
+    start_nodes = [node_by_token[token] for token in start_tokens]
 
     progress_write(
-        f"RDF2Vec: using {len(valid_query_ids):,} query nodes and "
-        f"{len(sampled_ids):,} sampled graph nodes as walk starting points."
+        f"RDF2Vec: using {len(valid_query_tokens):,} query nodes and "
+        f"{len(sampled_tokens):,} sampled graph nodes as walk starting points."
     )
 
     def random_walk(start_node):
@@ -123,17 +108,15 @@ def build_rdf2vec_embeddings(
     node_ids = []
     vectors = []
     for token in model.wv.index_to_key:
-        try:
-            node_id = int(token)
-        except (TypeError, ValueError):
+        if token not in node_by_token:
             continue
-        node_ids.append(node_id)
+        node_ids.append(token)
         vectors.append(model.wv[token])
 
     if not vectors:
         raise RuntimeError("Word2Vec produced no node embeddings.")
 
-    node_ids = np.asarray(node_ids, dtype=np.int64)
+    node_ids = np.asarray(node_ids, dtype=str)
     vectors = np.asarray(vectors, dtype=np.float32)
     progress_write(
         f"RDF2Vec complete: {len(node_ids):,} node embeddings "
@@ -146,17 +129,17 @@ def adjacency_from_knowledge_graph(knowledge_graph):
     """Convert the current KnowledgeGraph triples to entity adjacency."""
     adjacency = {}
     for subject, relations in knowledge_graph.triples_.items():
-        subject_id = int(subject)
-        neighbors = adjacency.setdefault(subject_id, {})
+        subject_node = str(subject)
+        neighbors = adjacency.setdefault(subject_node, {})
         for objects in relations.values():
             for obj in objects:
-                object_id = int(obj)
-                neighbors[object_id] = 1.0
-                adjacency.setdefault(object_id, {})
+                object_node = str(obj)
+                neighbors[object_node] = 1.0
+                adjacency.setdefault(object_node, {})
     return adjacency
 
 
 def embedding_lookup(node_ids, vectors):
-    """Return an ``int entity ID -> vector`` mapping."""
-    return {int(node_id): vector for node_id, vector in zip(node_ids, vectors)}
+    """Return an ``entity label -> vector`` mapping."""
+    return {str(node_id): vector for node_id, vector in zip(node_ids, vectors)}
 

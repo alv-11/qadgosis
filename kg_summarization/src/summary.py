@@ -242,10 +242,10 @@ class SummaryGraph(KnowledgeGraph):
         return self.max_triples is not None and self.triple_count >= self.max_triples
 
     def _embedding_for(self, node):
-        try:
-            return self.node_embeddings.get(int(node))
-        except (TypeError, ValueError):
-            return None
+        vector = self.node_embeddings.get(node)
+        if vector is not None:
+            return vector
+        return self.node_embeddings.get(str(node))
 
     def _build_query_vector(self, query_nodes):
         vectors = [self._embedding_for(node) for node in query_nodes]
@@ -1564,7 +1564,12 @@ def evaluate_sankofa_timestep(
     summary_runtime = time.time() - started
     _log_sankofa_summary(timestep, summary)
 
-    total_F1, _, _ = total_query_log_metrics(summary, test_data[timestep]) if timestep in test_data else (float("nan"), None, None)
+    if timestep in test_data:
+        total_F1, _, _ = total_query_log_metrics(summary, test_data[timestep])
+        macro_F1, _, _ = average_query_log_metrics(summary, test_data[timestep])
+    else:
+        total_F1 = float("nan")
+        macro_F1 = float("nan")
 
     df_weight = process_all_timesteps(
         training_set=test_data,
@@ -1584,6 +1589,7 @@ def evaluate_sankofa_timestep(
             "Runtime (seconds)": summary_runtime + walk_seconds + float(embedding_runtime),
             "Embedding Runtime (seconds)": float(embedding_runtime),
             "Future Test F1": total_F1,
+            "Future Test Macro F1": macro_F1,
             "Past Unseen Query F1": weighted_future_f1,
         }
     ])
